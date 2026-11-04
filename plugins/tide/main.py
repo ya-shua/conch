@@ -1,41 +1,39 @@
-"""心情插件：她自己的情绪、需求、关系。
+"""心情：接 Tide（汐）本体，桥接这边只当适配层。
 
-不依赖任何外部程序，状态存在本宿主的 data 目录里。
+为什么不再自带引擎
+------------------
+情绪怎么涨落、什么时候饿、什么时候委屈，这些是 Tide 自己的事。
+两处各写一份只会漂移——改了一边另一边不知道。所以这里不留逻辑：
+
+    Tide 在 → 用它；Tide 不在 → 心情不生效（不拦话、不注入），其余照常
 
 两个扩展点：
   speech.prompt   把「当前情绪 / 语气 / 字数上限 / 禁止事项」写进系统提示词
   speech.gate     发出去之前问一句能不能发：勿扰时段、闹脾气时可以拦下
-
-想让她主动冒泡的功能，问 plan()["proactive"]["should_send"] 就行。
 """
 
 from __future__ import annotations
 
 import importlib.util
-import json
 import time
 from pathlib import Path
 
 _HERE = Path(__file__).resolve().parent
 
 
-def _load_engine():
-    """插件是单文件加载的，没有包，所以引擎按路径单独加载一次。"""
-    spec = importlib.util.spec_from_file_location("qqbridge_tide_engine", _HERE / "engine.py")
+def _load_backend():
+    spec = importlib.util.spec_from_file_location("qqbridge_tide_backend", _HERE / "tide_backend.py")
     if spec is None or spec.loader is None:
-        raise RuntimeError(f"加载引擎失败：{_HERE / 'engine.py'}")
+        raise RuntimeError(f"加载适配层失败：{_HERE / 'tide_backend.py'}")
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
-_ENGINE = _load_engine()
-MoodEngine = _ENGINE.MoodEngine
-
 def _state_path(ctx) -> Path:
     data_dir = Path(getattr(ctx.cfg, "data_dir", "") or "data")
     data_dir.mkdir(parents=True, exist_ok=True)
-    return data_dir / "tide_state.json"
+    return data_dir / "tide_core_state.json"
 
 
 def person_for(ctx, conv_id: str, sender_id: str = "") -> str:
@@ -50,39 +48,42 @@ def person_for(ctx, conv_id: str, sender_id: str = "") -> str:
 
 async def setup(ctx) -> None:
     cfg = dict(ctx.config or {})
-    engine = MoodEngine(cfg)
-    path = _state_path(ctx)
-    loaded = False
-    if path.exists():
-        try:
-            engine.load_state(json.loads(path.read_text(encoding="utf-8")))
-            loaded = True
-        except Exception as exc:
-            ctx.log.warning("心情状态读不了，先当新的开始：%s", exc)
+    if not cfg.get("enabled", True):
+        ctx.log.info("心情插件关着，跳过")
+        return
 
-    runtime = {"engine": engine, "path": path, "saved_at": time.time(), "count": 0, "dirty": False}
-    ctx.services["mood"] = runtime
+    path = _state_path(ctx)
+    try:
+        backend = _load_backend().build(cfg, path)
+    except Exception as exc:
+        ctx.log.warning("接不上 Tide，心情不生效（说话不受影响）：%s", exc)
+        return
+
+    ctx.services["mood"] = {
+        "engine": backend,
+        "path": path,
+        "saved_at": time.time(),
+        "count": 0,
+    }
 
     ctx.on("message.observed", lambda p: observe(ctx, p), priority=50)
     ctx.on("speech.prompt", lambda p: prompt_hook(ctx, p), priority=50)
     ctx.on("speech.gate", lambda p: gate_hook(ctx, p), priority=50)
 
-    snap = engine.snapshot("owner")
+    snap = backend.snapshot("owner")
     ctx.log.info(
-        "心情就绪（%s情绪 %s %.2f｜关系 %s｜%s）",
-        "已恢复，" if loaded else "全新，",
-        snap["emotion"]["label"],
-        snap["emotion"]["intensity"],
-        snap["bond"]["tier_name"],
-        str(path),
+        "心情就绪（Tide 本体｜情绪 %s %.2f｜关系 %s｜%s）",
+        snap.get("emotion", {}).get("label", "?"),
+        snap.get("emotion", {}).get("intensity", 0.0),
+        snap.get("bond", {}).get("tier_name", "?"),
+        path,
     )
 
 
 async def teardown(ctx) -> None:
     runtime = ctx.services.pop("mood", None) or {}
     engine = runtime.get("engine")
-    path = runtime.get("path")
-    if engine is None or path is None:
+    if engine is None:
         return
     try:
         save(runtime)
@@ -91,14 +92,9 @@ async def teardown(ctx) -> None:
 
 
 def save(runtime: dict) -> None:
-    engine = runtime["engine"]
-    path: Path = runtime["path"]
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text(json.dumps(engine.to_state(), ensure_ascii=False, indent=2), encoding="utf-8")
-    tmp.replace(path)
+    runtime["engine"].save_state()
     runtime["saved_at"] = time.time()
     runtime["count"] = 0
-    runtime["dirty"] = False
 
 
 def _maybe_save(ctx, runtime: dict) -> None:
@@ -160,7 +156,7 @@ async def gate_hook(ctx, payload: dict) -> None:
         ctx.log.warning("心情读取失败，先放行：%s", exc)
         return
 
-    bond = snap["bond"]
+    bond = snap.get("bond") or {}
     owner = person == "owner"
     allow, reason = True, ""
 
@@ -168,7 +164,7 @@ async def gate_hook(ctx, payload: dict) -> None:
         prox = plan.get("proactive") or {}
         allow = bool(prox.get("should_send"))
         reason = str(prox.get("reason") or "")
-    elif snap["quiet"] and not owner and bool(cfg.get("deny_in_quiet", True)):
+    elif snap.get("quiet") and not owner and bool(cfg.get("deny_in_quiet", True)):
         allow, reason = False, "她在睡觉"
     elif bond.get("mood") == "cold" and not owner and bool(cfg.get("block_when_sulky", False)):
         allow, reason = False, "还在闹脾气，不想理人"
@@ -178,7 +174,10 @@ async def gate_hook(ctx, payload: dict) -> None:
     if allow:
         ctx.log.debug(
             "放行 %s 情绪=%s 关系=%s 语气=%s",
-            conv_id, snap["emotion"]["label"], bond.get("tier_name"), plan.get("tone"),
+            conv_id,
+            (snap.get("emotion") or {}).get("label"),
+            bond.get("tier_name"),
+            plan.get("tone"),
         )
         if feature == "proactive":
             engine.mark_proactive(person)

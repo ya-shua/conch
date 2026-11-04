@@ -49,7 +49,7 @@ def read_meta(folder: Path) -> PluginMeta:
     meta_path = folder / "metadata.json"
     if not meta_path.exists():
         raise ValueError(f"{folder} 缺少 metadata.json")
-    data = json.loads(meta_path.read_text(encoding="utf-8"))
+    data = json.loads(meta_path.read_text(encoding="utf-8-sig"))
     if not isinstance(data, dict):
         raise ValueError(f"{meta_path} 顶层必须是对象")
     pid = str(data.get("id") or folder.name)
@@ -86,7 +86,7 @@ class Loader:
             cfg_path = folder / "config.json"
             if cfg_path.exists():
                 try:
-                    meta.config = json.loads(cfg_path.read_text(encoding="utf-8")) or {}
+                    meta.config = json.loads(cfg_path.read_text(encoding="utf-8-sig")) or {}
                 except Exception as exc:
                     log_.warning("%s 的 config.json 读不了（用空配置）：%s", meta.id, exc)
                     meta.config = {}
