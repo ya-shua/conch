@@ -670,7 +670,7 @@ input[type=number]{font-variant-numeric:tabular-nums;max-width:110px}
                 <div class="field">
                   <label for="providerPick">服务商</label>
                   <select id="providerPick">
-                    <option value="custom">自定义（自己填地址和模型名）</option>
+                    <option value="custom">自定义 / 中转（地址、名字、模型都自己填）</option>
                     <option value="deepseek">DeepSeek 官方</option>
                     <option value="dashscope">阿里云百炼 / 通义千问</option>
                     <option value="kimi">月之暗面 Kimi</option>
@@ -684,8 +684,18 @@ input[type=number]{font-variant-numeric:tabular-nums;max-width:110px}
                   <input type="text" id="baseUrl" placeholder="https://api.deepseek.com/v1">
                 </div>
                 <div class="field">
+                  <label for="providerLabel">名字</label>
+                  <input type="text" id="providerLabel" placeholder="比如：我的中转、某某 API">
+                  <div class="hint">只用来显示，不参与请求。</div>
+                </div>
+                <div class="field">
                   <label for="modelName">模型名</label>
-                  <input type="text" id="modelName" placeholder="deepseek-chat">
+                  <div style="display:flex;gap:8px">
+                    <input type="text" id="modelName" list="modelOptions" placeholder="deepseek-chat" style="flex:1">
+                    <button id="fetchModelsBtn" type="button">拉模型</button>
+                  </div>
+                  <datalist id="modelOptions"></datalist>
+                  <div class="hint" id="modelHint">填地址和 Key 后可以点「拉模型」，从中挑一个，也能自己敲。</div>
                 </div>
                 <div class="field" style="margin-bottom:0">
                   <label for="apiKey">API Key</label>
@@ -1112,7 +1122,8 @@ async function loadModels() {
   settings = await api("/api/settings");
   $("baseUrl").value = settings.model.base_url || "";
   $("modelName").value = settings.model.model || "";
-  if ($("providerPick")) $("providerPick").value = detectProvider(settings.model.base_url);
+  if ($("providerLabel")) $("providerLabel").value = settings.model.label || "";
+  if ($("providerPick")) $("providerPick").value = detectProvider(settings.model.base_url, settings.model.label);
   $("apiKey").value = "";
   $("keyHint").innerHTML = settings.model.has_key
     ? "已配置（尾号 " + esc(settings.model.key_hint) + "）。留空表示不修改。"
@@ -1342,7 +1353,13 @@ $("confirmSwitch").onclick = () => {
 };
 
 $("saveModelBtn").onclick = async () => {
-  const body = { model: { model: $("modelName").value.trim(), base_url: $("baseUrl").value.trim() } };
+  const body = {
+    model: {
+      model: $("modelName").value.trim(),
+      base_url: $("baseUrl").value.trim(),
+      label: $("providerLabel") ? $("providerLabel").value.trim() : "",
+    },
+  };
   if ($("apiKey").value.trim()) body.model.api_key = $("apiKey").value.trim();
   try {
     await api("/api/settings", { method: "PUT", body: JSON.stringify(body) });
@@ -1430,7 +1447,39 @@ const PROVIDERS = {
   siliconflow: { base: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen2.5-7B-Instruct" },
 };
 
-function detectProvider(base) {
+$("fetchModelsBtn").onclick = async () => {
+  const btn = $("fetchModelsBtn");
+  const hint = $("modelHint");
+  const base = $("baseUrl").value.trim();
+  if (!base) { hint.textContent = "先填接口地址"; hint.style.color = "var(--danger)"; $("baseUrl").focus(); return; }
+  btn.disabled = true;
+  hint.textContent = "拉取中…";
+  hint.style.color = "var(--muted)";
+  try {
+    const body = { base_url: base };
+    const typed = $("apiKey").value.trim();
+    if (typed) body.api_key = typed;
+    const r = await api("/api/models/list", { method: "POST", body: JSON.stringify(body) });
+    const list = r.models || [];
+    $("modelOptions").innerHTML = list.map((m) => '<option value="' + m.replace(/"/g, "&quot;") + '"></option>').join("");
+    if (list.length) {
+      hint.textContent = "拉到 " + list.length + " 个模型，点输入框挑一个";
+      hint.style.color = "var(--ok)";
+      if (!$("modelName").value.trim()) $("modelName").value = list[0];
+      $("modelName").focus();
+    } else {
+      hint.textContent = "接口通了，但它没给出模型列表，手填一个吧";
+      hint.style.color = "var(--muted)";
+    }
+  } catch (e) {
+    hint.textContent = "拉不到：" + e.message + "（有些中转不实现 /models，手填模型名也行）";
+    hint.style.color = "var(--danger)";
+  } finally {
+    btn.disabled = false;
+  }
+};
+
+function detectProvider(base, label) {
   base = (base || "").replace(/\/+$/, "");
   for (const [k, v] of Object.entries(PROVIDERS)) {
     if (v.base.replace(/\/+$/, "") === base) return k;
@@ -1439,10 +1488,17 @@ function detectProvider(base) {
 }
 
 $("providerPick").onchange = () => {
-  const p = PROVIDERS[$("providerPick").value];
-  if (!p) { $("baseUrl").focus(); return; }  // 自定义：不动你填的东西
+  const key = $("providerPick").value;
+  const p = PROVIDERS[key];
+  if (!p) {  // 自定义 / 中转：不动你填的东西，只是把焦点递过去
+    $("modelOptions").innerHTML = "";
+    $("baseUrl").focus();
+    return;
+  }
   $("baseUrl").value = p.base;
   $("modelName").value = p.model;
+  if ($("providerLabel")) $("providerLabel").value = "";
+  $("modelOptions").innerHTML = "";
 };
 
 /* ---------- 登录 ---------- */
