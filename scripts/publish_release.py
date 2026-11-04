@@ -72,7 +72,7 @@ def call(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
 
 
 def version() -> str:
-    text = (ROOT / "qqbridge" / "__init__.py").read_text(encoding="utf-8")
+    text = (ROOT / "__init__.py").read_text(encoding="utf-8")
     match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
     if not match:
         raise SystemExit("读不到 __version__")
@@ -99,6 +99,10 @@ def section(ver: str) -> str:
 
 
 def main() -> int:
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
     ver = version()
     tag = f"v{ver}"
     base = f"/repos/{REPO}"
