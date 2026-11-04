@@ -1,0 +1,8 @@
+{
+  "id": "eyes",
+  "name": "留影",
+  "version": "0.1.0",
+  "author": "dady",
+  "description": "群里有人发图，她先看一眼再说话。看图用的是留影那套，不复制它的逻辑。",
+  "builtin": false
+}

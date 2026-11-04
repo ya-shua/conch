@@ -1,0 +1,12 @@
+#!/bin/sh
+# 提交前跑一遍隐私门禁；拦下就直接中止提交。
+set -e
+cd "$(dirname "$0")/.."
+if command -v python >/dev/null 2>&1; then
+  python scripts/privacy_gate.py --staged
+elif command -v python3 >/dev/null 2>&1; then
+  python3 scripts/privacy_gate.py --staged
+else
+  echo "隐私门禁：找不到 python，拒绝提交" >&2
+  exit 1
+fi
