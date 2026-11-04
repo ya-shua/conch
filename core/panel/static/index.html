@@ -307,8 +307,8 @@ input[type=number]{font-variant-numeric:tabular-nums;max-width:110px}
     <button class="nav active" data-view="overview"><i>◫</i>运行总览</button>
     <button class="nav" data-view="playground"><i>✎</i>试一句</button>
     <button class="nav" data-view="messages"><i>✉</i>消息<span class="badge" id="navApprovals"></span></button>
-    <button class="nav" data-view="sessions"><i>☷</i>会话<span class="badge zero" id="navSessions"></span></button>
-    <button class="nav" data-view="plugins"><i>▦</i>插件<span class="badge zero" id="navPlugins"></span></button>
+    <button class="nav" data-view="sessions"><i>☷</i>会话</button>
+    <button class="nav" data-view="plugins"><i>▦</i>插件</button>
 
     <div class="grp">聊天行为</div>
     <button class="nav" data-view="persona"><i>◉</i>人格与角色</button>
@@ -860,7 +860,7 @@ async function loadStatus() {
   $("mTok").textContent = fmtTok((s.today.prompt_tokens || 0) + (s.today.completion_tokens || 0));
   $("mTokHint").textContent = "缓存命中 " + (s.today.prompt_tokens ? Math.round(s.today.cached_tokens / s.today.prompt_tokens * 100) : 0) + "%";
   $("mPlugins").textContent = s.plugins_enabled + " / " + s.plugins;
-  const pv = $("navPlugins"); pv.textContent = s.plugins; pv.className = "badge" + (s.plugins ? "" : " zero");
+  const pv = $("navPlugins"); if (pv) { pv.textContent = s.plugins; }
   $("iWs").textContent = s.ws_url; $("iWs").title = s.ws_url;
   $("iModel").textContent = s.model;
   $("iKey").innerHTML = s.api_key_set ? '<span style="color:var(--ok)">已配置</span>' : '<span style="color:var(--danger)">未配置</span>';
@@ -898,7 +898,7 @@ async function loadOverview() {
     : '<tr><td colspan="5" class="empty">还没有调用</td></tr>';
   const convs = await api("/api/messages/convs");
   $("mSessions").textContent = convs.convs.length;
-  const sv = $("navSessions"); sv.textContent = convs.convs.length || ""; sv.className = "badge" + (convs.convs.length ? "" : " zero");
+  const sv = $("navSessions"); if (sv) { sv.textContent = convs.convs.length || ""; }
   const logs = await api("/api/logs");
   const box = $("activityLog");
   box.textContent = logs.lines.length ? logs.lines.slice(-100).join("\n") : "（空）";
@@ -924,10 +924,7 @@ async function loadPlugins() {
   // 海螺本体不算插件：它就是宿主自己
   const mine = plugins.filter((p) => p.id !== "conch");
   const core = plugins.find((p) => p.id === "conch");
-  if ($("navPlugins")) {
-    $("navPlugins").textContent = String(mine.length);
-    $("navPlugins").className = "badge" + (mine.length ? "" : " zero");
-  }
+  if ($("navPlugins")) $("navPlugins").textContent = String(mine.length);
   if ($("coreLine")) {
     $("coreLine").textContent = core
       ? "海螺 v" + core.version + " · 两件事：替她说话、管下面这些插件"
