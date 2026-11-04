@@ -91,7 +91,7 @@ token 只留给脚本用。
 
 ```
 plugins/conch    说话主逻辑（合流、人设、遥控、发送）
-plugins/tide     心情：情绪会衰减、会饿会困，影响语气和句子长短
+plugins/tide     心情：接 Tide（汐）本体，桥接这边只当适配层
 plugins/eyes     留影：有人发图，她先看一眼再回
 ```
 
