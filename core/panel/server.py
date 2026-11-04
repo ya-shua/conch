@@ -297,6 +297,62 @@ async def api_settings_get(request: web.Request) -> web.Response:
     )
 
 
+# ---------- 一键启动 ----------
+
+
+def _launch_items(request: web.Request) -> list[dict[str, Any]]:
+    from .. import launchers as _launchers
+
+    return _launchers.load(request.app["cfg_path"])
+
+
+async def api_launchers(request: web.Request) -> web.Response:
+    from .. import launchers as _launchers
+
+    items = _launch_items(request)
+    return web.json_response({"items": [_launchers.status(i) for i in items]})
+
+
+async def api_launcher_start(request: web.Request) -> web.Response:
+    from .. import launchers as _launchers
+
+    lid = request.match_info["id"]
+    body: dict[str, Any] = {}
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+    items = _launch_items(request)
+    item = next((i for i in items if str(i.get("id")) == lid), None)
+    if item is None:
+        return web.json_response({"error": "没有这一条"}, status=404)
+
+    secrets = body.get("secrets") if isinstance(body.get("secrets"), dict) else {}
+    if secrets:
+        stored = dict(item.get("secret_values") or {})
+        stored.update({str(k): str(v) for k, v in secrets.items() if v})
+        item["secret_values"] = stored
+        _launchers.save(request.app["cfg_path"], items)
+
+    try:
+        return web.json_response(_launchers.start(item, secrets))
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+
+
+async def api_launcher_stop(request: web.Request) -> web.Response:
+    from .. import launchers as _launchers
+
+    lid = request.match_info["id"]
+    items = _launch_items(request)
+    item = next((i for i in items if str(i.get("id")) == lid), None)
+    if item is None:
+        return web.json_response({"error": "没有这一条"}, status=404)
+    return web.json_response(_launchers.stop(item))
+
+
 async def api_models_list(request: web.Request) -> web.Response:
     """按当前的地址和 Key 拉一次 /models，给她自己挑模型用。
 
@@ -845,6 +901,9 @@ def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Applica
     app.router.add_post("/api/test-chat", api_test_chat)
     app.router.add_post("/api/verify-model", api_verify_model)
     app.router.add_post("/api/models/list", api_models_list)
+    app.router.add_get("/api/launchers", api_launchers)
+    app.router.add_post("/api/launchers/{id}/start", api_launcher_start)
+    app.router.add_post("/api/launchers/{id}/stop", api_launcher_stop)
     app.router.add_get("/api/auth", api_auth)
     app.router.add_post("/api/login", api_login)
     app.router.add_post("/api/logout", api_logout)

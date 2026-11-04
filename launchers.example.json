@@ -1,0 +1,17 @@
+[
+  {
+    "id": "snowluma",
+    "name": "SnowLuma（QQ 网关）",
+    "note": "QQ 收发全靠它",
+    "cwd": "D:\\\\path\\\\to\\\\SnowLuma",
+    "cmd": "launcher.bat",
+    "port": 3000,
+    "secrets": [
+      {
+        "key": "token",
+        "label": "WS Token",
+        "env": "SNOWLUMA_TOKEN"
+      }
+    ]
+  }
+]

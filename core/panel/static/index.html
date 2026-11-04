@@ -441,8 +441,18 @@ input[type=number]{font-variant-numeric:tabular-nums;max-width:110px}
 
         <div class="page" data-page="plugins">
           <section class="sec">
+            <div class="sec-head"><h2>海螺本体</h2><span class="note">这个控制台 + 说话管道，不是插件</span></div>
+            <div class="sec-body">
+              <div class="hint" id="coreLine">海螺 v— · 两件事：替她说话、管下面这些插件</div>
+            </div>
+          </section>
+          <section class="sec">
             <div class="sec-head"><h2>已安装</h2><span class="note">plugins/ 目录</span></div>
             <div class="sec-body"><div class="plugs" id="pluginGrid"></div></div>
+          </section>
+          <section class="sec">
+            <div class="sec-head"><h2>外部程序</h2><span class="note">点一下弹新窗口，日志看得见</span></div>
+            <div class="sec-body"><div class="plugs" id="launchGrid"><div class="empty">读不到 launchers.json</div></div></div>
           </section>
         </div>
 
@@ -911,8 +921,20 @@ async function loadSessions() {
 async function loadPlugins() {
   const { plugins } = await api("/api/plugins");
   const grid = $("pluginGrid");
-  if (!plugins.length) { grid.innerHTML = '<div class="empty">plugins/ 里还没有插件</div>'; return; }
-  grid.innerHTML = plugins.map((p) => {
+  // 海螺本体不算插件：它就是宿主自己
+  const mine = plugins.filter((p) => p.id !== "conch");
+  const core = plugins.find((p) => p.id === "conch");
+  if ($("navPlugins")) {
+    $("navPlugins").textContent = String(mine.length);
+    $("navPlugins").className = "badge" + (mine.length ? "" : " zero");
+  }
+  if ($("coreLine")) {
+    $("coreLine").textContent = core
+      ? "海螺 v" + core.version + " · 两件事：替她说话、管下面这些插件"
+      : "海螺 · 两件事：替她说话、管下面这些插件";
+  }
+  if (!mine.length) { grid.innerHTML = '<div class="empty">plugins/ 里还没有插件</div>'; }
+  else grid.innerHTML = mine.map((p) => {
     const st = p.status === "enabled" ? pill("g", "运行中") : p.status === "error" ? pill("r", "异常") : pill("n", "已停用");
     return '<div class="plug">' +
       '<div class="plug-h"><div class="plug-i">' + esc((p.name || "?")[0]) + "</div>" +
@@ -933,6 +955,70 @@ async function loadPlugins() {
         await loadPlugins();
       } catch (e) { toast("操作失败：" + e.message); }
       btn.disabled = false;
+    };
+  });
+  await loadLaunchers();
+}
+
+async function loadLaunchers() {
+  const grid = $("launchGrid");
+  if (!grid) return;
+  let items = [];
+  try {
+    const r = await api("/api/launchers");
+    items = r.items || [];
+  } catch (e) {
+    grid.innerHTML = '<div class="empty">读不到启动清单：' + esc(e.message) + "</div>";
+    return;
+  }
+  if (!items.length) {
+    grid.innerHTML = '<div class="empty">launchers.json 里还没有条目</div>';
+    return;
+  }
+  grid.innerHTML = items.map((it) => {
+    const dot = it.running ? pill("g", "在跑") : pill("n", "没跑");
+    const secretFields = (it.secrets || []).map((s) =>
+      '<div class="field" style="margin:0 0 8px"><label>' + esc(s.label) + "</label>" +
+      '<input type="password" data-secret="' + esc(s.key) + '" data-for="' + esc(it.id) +
+      '" placeholder="' + (s.filled ? "已存，留空表示不改" : "还没填") + '"></div>'
+    ).join("");
+    return '<div class="plug" data-launcher="' + esc(it.id) + '">' +
+      '<div class="plug-h"><div class="plug-i">' + esc((it.name || "?")[0]) + "</div>" +
+      '<div style="flex:1;min-width:0"><div class="plug-n">' + esc(it.name) + " " + dot + "</div>" +
+      '<div class="plug-m">' + (it.port ? "端口 " + it.port : "无固定端口") +
+      (it.by ? " · 据" + esc(it.by) + "判断" : "") + "</div></div></div>" +
+      '<div class="plug-d">' + esc(it.note || "") + "</div>" +
+      secretFields +
+      '<div class="plug-f"><code>' + esc(it.id) + "</code>" +
+      '<button class="primary sm" data-act="start" data-id="' + esc(it.id) + '">启动</button>' +
+      '<button class="sm" data-act="stop" data-id="' + esc(it.id) + '">停止</button></div></div>';
+  }).join("");
+
+  grid.querySelectorAll("button[data-act]").forEach((btn) => {
+    btn.onclick = async () => {
+      const id = btn.dataset.id;
+      const act = btn.dataset.act;
+      const card = grid.querySelector('[data-launcher="' + id + '"]');
+      const secrets = {};
+      if (act === "start" && card) {
+        card.querySelectorAll("input[data-secret]").forEach((inp) => {
+          if (inp.value.trim()) secrets[inp.dataset.secret] = inp.value.trim();
+        });
+      }
+      btn.disabled = true;
+      try {
+        const r = await api("/api/launchers/" + encodeURIComponent(id) + "/" + act, {
+          method: "POST",
+          body: JSON.stringify(act === "start" ? { secrets } : {}),
+        });
+        if (act === "start") toast("已开新窗口（pid " + (r.pid || "?") + "）");
+        else toast(r.ok ? "已停" : (r.error || "停不了"));
+        setTimeout(loadLaunchers, 800);
+      } catch (e) {
+        toast((act === "start" ? "启动失败：" : "停止失败：") + e.message);
+      } finally {
+        btn.disabled = false;
+      }
     };
   });
 }

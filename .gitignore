@@ -15,3 +15,5 @@ token.txt
 panel_auth.json
 tide_state.json
 .DS_Store
+# 本机启动清单（含路径和密码）
+launchers.json
