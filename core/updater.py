@@ -118,15 +118,88 @@ async def check(timeout_s: float = 8.0) -> dict:
     return result
 
 
+# 更新时绝不允许被覆盖的东西：本机配置与她那边的私人数据
+def _protected(rel: str) -> bool:
+    if rel in {"config.json", "token.txt", "panel_auth.json"}:
+        return True
+    if any(rel.startswith(p) for p in ("data/", "logs/", "roles/", ".venv/", ".git/")):
+        return True
+    parts = rel.split("/")
+    return len(parts) == 3 and parts[0] == "plugins" and parts[2] == "config.json"
+
+
+async def _download_tarball(tag: str, timeout_s: float = 60.0) -> bytes:
+    """走 api.github.com 拿发行包（它会 302 到 codeload，这条路通常通）。"""
+    url = f"https://api.github.com/repos/{REPO}/tarball/{tag}"
+    timeout = aiohttp.ClientTimeout(total=timeout_s)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        async with session.get(
+            url, headers={"User-Agent": "conch-updater", "Accept": "application/vnd.github+json"}
+        ) as resp:
+            if resp.status != 200:
+                raise RuntimeError(f"下载失败 HTTP {resp.status}")
+            return await resp.read()
+
+
+def _extract_tarball(blob: bytes, root: Path) -> tuple[int, int]:
+    """解到项目根。返回 (写入数, 跳过数)。"""
+    import io as _io
+    import tarfile
+
+    written = skipped = 0
+    with tarfile.open(fileobj=_io.BytesIO(blob), mode="r:gz") as tar:
+        for member in tar.getmembers():
+            if not member.isfile():
+                continue
+            rel = member.name.split("/", 1)[-1]  # 去掉 github 加的那层前缀
+            if not rel or rel.startswith("/") or ".." in rel.split("/"):
+                continue
+            if _protected(rel):
+                skipped += 1
+                continue
+            data = tar.extractfile(member)
+            if data is None:
+                continue
+            target = root / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            target.write_bytes(data.read())
+            written += 1
+    return written, skipped
+
+
 async def apply_update() -> dict:
     """拉最新代码。只做快进合并，失败原样返回。"""
-    git = _git()
-    if not git:
-        return {"ok": False, "error": "找不到 git，手动更新：git pull"}
     root = project_root()
-    if not (root / ".git").exists():
-        return {"ok": False, "error": f"{root} 不是 git 仓库，手动拉一次代码"}
+    info = await check()
+    latest = str(info.get("latest") or "")
 
+    git = _git()
+    if git and (root / ".git").exists():
+        pulled = await _git_pull(git, root)
+        if pulled["ok"]:
+            return pulled
+        log_.warning("git pull 没成，改走发行包：%s", str(pulled.get("error"))[:160])
+
+    if latest:
+        try:
+            blob = await _download_tarball(latest)
+            written, skipped = _extract_tarball(blob, root)
+            return {
+                "ok": True,
+                "via": "tarball",
+                "latest": latest,
+                "written": written,
+                "skipped": skipped,
+                "output": f"下载 {latest}：写入 {written} 个文件，跳过 {skipped} 个本机配置",
+                "restart_hint": "代码已更新，重启海螺后生效",
+            }
+        except Exception as exc:
+            return {"ok": False, "error": f"更新失败：{exc}"}
+
+    return {"ok": False, "error": "没查到可用版本，稍后再试"}
+
+
+async def _git_pull(git: str, root: Path) -> dict:
     proc = await asyncio.create_subprocess_exec(
         git,
         "-C",

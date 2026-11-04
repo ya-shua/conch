@@ -153,6 +153,22 @@ git config core.hooksPath .githooks
 
 ---
 
+## 发版（维护者）
+
+版本号在 `qqbridge/__init__.py`，发版流程固定四步：
+
+```bash
+python scripts/privacy_gate.py --all     # 1. 过门禁，有拦截就别发
+git add -A && git commit -m "release: v0.1.1"
+python scripts/publish_release.py        # 2. 推代码 + 打 tag + 建 release
+```
+
+`publish_release.py` 走 GitHub 的 Git Data API 而不是 `git push`——
+有些网络只有 `api.github.com` 通、`github.com:443` 被挡，push 必然失败。
+它做的事和 push 等价，顺带把 tag 和 release 一起建好。
+
+token 只从 `GITHUB_TOKEN` 环境变量或 `%USERPROFILE%\Desktop\token.txt` 读，不会打印。
+
 ## 许可
 
 MIT。见 [LICENSE](LICENSE)。
