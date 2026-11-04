@@ -289,11 +289,66 @@ async def api_settings_get(request: web.Request) -> web.Response:
             "model": {
                 "base_url": cfg.model.base_url,
                 "model": cfg.model.model,
+                "label": cfg.model.label,
                 "has_key": bool(cfg.model.api_key),
                 "key_hint": ("····" + cfg.model.api_key[-4:]) if cfg.model.api_key else "",
             },
         }
     )
+
+
+async def api_models_list(request: web.Request) -> web.Response:
+    """按当前的地址和 Key 拉一次 /models，给她自己挑模型用。
+
+    中转站不一定实现这个接口，所以拉不到不是错，前端就当没拉到。
+    """
+    import re as _re
+
+    cfg = request.app["cfg"]
+    body: dict[str, Any] = {}
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+    base_url = str(body.get("base_url") or cfg.model.base_url or "").strip().rstrip("/")
+    api_key = str(body.get("api_key") or cfg.model.api_key or "").strip()
+    if not base_url:
+        return web.json_response({"error": "还没填接口地址"}, status=400)
+    if not api_key:
+        return web.json_response({"error": "还没填 API Key"}, status=400)
+
+    from aiohttp import ClientSession, ClientTimeout
+
+    url = base_url + "/models"
+    timeout = ClientTimeout(total=20)
+    try:
+        async with ClientSession(timeout=timeout) as session:
+            async with session.get(
+                url,
+                headers={"Authorization": f"Bearer {api_key}", "User-Agent": "conch-panel"},
+            ) as resp:
+                text = await resp.text()
+                if resp.status != 200:
+                    return web.json_response(
+                        {"error": f"HTTP {resp.status}：{text[:160]}"}, status=502
+                    )
+                data = json.loads(text)
+    except Exception as exc:
+        return web.json_response({"error": f"拉不到：{exc}"}, status=502)
+
+    items = data.get("data") if isinstance(data, dict) else data
+    ids = []
+    for item in items or []:
+        if isinstance(item, dict):
+            mid = str(item.get("id") or item.get("model") or "").strip()
+        else:
+            mid = str(item).strip()
+        if mid:
+            ids.append(mid)
+    ids.sort()
+    return web.json_response({"ok": True, "models": ids, "count": len(ids)})
 
 
 async def api_settings_put(request: web.Request) -> web.Response:
@@ -350,6 +405,10 @@ async def api_settings_put(request: web.Request) -> web.Response:
             cfg.model.api_key = str(patch["api_key"]).strip()
             raw_model["api_key"] = cfg.model.api_key
             changed.append("model.api_key")
+        if "label" in patch:
+            cfg.model.label = str(patch["label"] or "").strip()
+            raw_model["label"] = cfg.model.label
+            changed.append("model.label")
 
     try:
         Path(request.app["cfg_path"]).write_text(
@@ -785,6 +844,7 @@ def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Applica
     app.router.add_post("/api/conversation/action", api_conversation_action)
     app.router.add_post("/api/test-chat", api_test_chat)
     app.router.add_post("/api/verify-model", api_verify_model)
+    app.router.add_post("/api/models/list", api_models_list)
     app.router.add_get("/api/auth", api_auth)
     app.router.add_post("/api/login", api_login)
     app.router.add_post("/api/logout", api_logout)

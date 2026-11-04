@@ -59,6 +59,8 @@ class ModelConfig:
     api_key: str = ""
     model: str = "deepseek-chat"
     timeout_s: int = 60
+    # 自定义 / 中转时自己起的名字，只用来显示
+    label: str = ""
 
 
 @dataclass
