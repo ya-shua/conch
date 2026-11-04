@@ -1,0 +1,37 @@
+{
+  "onebot": {
+    "ws_url": "ws://127.0.0.1:3001",
+    "http_url": "http://127.0.0.1:3000",
+    "access_token": "",
+    "ws_access_token": ""
+  },
+  "allow": {
+    "groups": [],
+    "private": [],
+    "deny_groups": [],
+    "deny_private": [],
+    "allow_all_when_empty": false
+  },
+  "model": {
+    "base_url": "https://api.deepseek.com/v1",
+    "api_key": "",
+    "model": "deepseek-chat",
+    "timeout_s": 60
+  },
+  "panel": {
+    "port": 7801,
+    "token": ""
+  },
+  "owner_qq": "",
+  "persona": "default",
+  "merge_window_ms": 1500,
+  "data_dir": "data",
+  "roles_dir": "roles",
+  "plugins_dir": "plugins",
+  "plugins_enabled": ["tide"],
+  "tools": {
+    "enabled": false,
+    "max_rounds": 4,
+    "servers": []
+  }
+}

@@ -1,0 +1,17 @@
+__pycache__/
+*.py[cod]
+.venv/
+.pytest_cache/
+.pytest_cache
+data/
+logs/
+roles/
+config.json
+plugins/*/config.json
+*.db
+*.sqlite3
+*.log
+token.txt
+panel_auth.json
+tide_state.json
+.DS_Store
