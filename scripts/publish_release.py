@@ -175,8 +175,7 @@ def main() -> int:
         tree_items.append({"path": rel, "mode": "100644", "type": "blob", "sha": blob["sha"]})  # privacy-ok 文件模式不是号
 
     payload = {"tree": tree_items}
-    if base_tree_sha:
-        payload["base_tree"] = base_tree_sha
+    # 故意不用 base_tree：要的是“整树快照”，否则删掉的文件会永远留在远端
     status, tree = call("POST", f"{base}/git/trees", payload)
     if status != 201:
         print("tree 失败:", status, tree.get("message"))
