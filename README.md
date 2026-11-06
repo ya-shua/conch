@@ -52,7 +52,7 @@ QQ 号、手机号、数据库文件。拦下就提交不了。规则可以看�
 需要 Python 3.11+。
 
 ```bash
-git clone https://github.com/ya-shua/conch-workbench.git
+git clone https://github.com/ya-shua/conch.git
 cd conch
 python -m venv .venv
 .venv\Scripts\pip install -r requirements.txt   # Linux/macOS: .venv/bin/pip

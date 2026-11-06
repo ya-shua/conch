@@ -30,7 +30,7 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 API = "https://api.github.com"
-REPO = os.environ.get("GITHUB_REPO", "ya-shua/conch-workbench")
+REPO = os.environ.get("GITHUB_REPO", "ya-shua/conch")
 DESC = "海螺工作台：一个 QQ 上的她，插件化、自带控制台"
 
 

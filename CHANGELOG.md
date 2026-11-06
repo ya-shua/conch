@@ -2,6 +2,11 @@
 
 ## v0.1.8 — 2026-11-07
 
+**仓库合并**
+
+- 代码统一发回 `ya-shua/conch`（GitHub 上的老项目就是这个，不再单开一个仓库）
+- `updater.REPO`、`publish_release.py`、README 里的克隆地址都改回 `ya-shua/conch`
+
 **修一键更新**
 
 - 修 `restart_self` 少导入 `sys` 导致「一键更新」点了报 500

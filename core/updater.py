@@ -23,7 +23,7 @@ from . import log
 
 log_ = log.get("update")
 
-REPO = "ya-shua/conch-workbench"
+REPO = "ya-shua/conch"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 CODE_URL = f"https://github.com/{REPO}"
 
