@@ -1,8 +1,0 @@
-{
-  "id": "tide",
-  "name": "心情（汐）",
-  "version": "0.1.0",
-  "author": "dady",
-  "description": "把汐的心境系统接进发言链路：语气、长度、能不能开口都听它的",
-  "builtin": false
-}
