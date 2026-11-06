@@ -16,7 +16,7 @@ import urllib.request
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent          # qqbridge/
-PROJECT = ROOT.parent                                   # D:\AI\项目根
+PROJECT = ROOT.parent                                   # 项目根目录的上一级
 CONFIG = ROOT / "config.json"
 PYTHONW = ROOT / ".venv" / "Scripts" / "pythonw.exe"
 NO_WINDOW = 0x08000000

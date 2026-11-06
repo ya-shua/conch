@@ -47,8 +47,16 @@ BLOCKED_FILES = re.compile(
 )
 
 # 明确正常的数字：毫秒、字节、常见端口、测试假号
+# 一律算隐私的称呼/账号名（按需加，别把通用词加进来）
+BLOCKED_WORDS = (
+    "阿鱼",
+    "项目根",
+    "QQ阿鱼",
+    "dady",
+)
+
 BENIGN_NUMBERS = {
-    "10000", "20000", "30000", "50000", "60000", "90000", "100000",
+    "10000", "20000", "123456", "100644", "100755", "1700000000", "45000", "30000", "30000", "50000", "60000", "90000", "100000",
     "120000", "180000", "300000", "600000", "900000",
     "86400", "86400000", "1048576", "3600000",
     "3000", "3001", "5099", "5173", "7801", "8080", "9090", "5188", "8412",
@@ -91,6 +99,31 @@ def rule_keys(text: str) -> list[tuple[int, int, str]]:
         out.append((line, col, f"疑似凭据 {value[:6]}…"))
     bearer = re.compile(r"Bearer\s+([A-Za-z0-9._-]{20,})")
     out += _hits(bearer, text, group=1)
+    return out
+
+
+def rule_words(text: str) -> list[tuple[int, int, str]]:
+    """昵称、账号名一类，出现就算隐私。"""
+    out = []
+    for word in BLOCKED_WORDS:
+        for line, col, value in _hits(re.compile(re.escape(word)), text):
+            out.append((line, col, value))
+    return out
+
+
+def rule_qq_bare(text: str) -> list[tuple[int, int, str]]:
+    """没写「QQ号」前缀的裸 QQ 号也要拦：5~11 位数字即成。"""
+    out = []
+    bare = re.compile(r"(?<![\w#.])(\d{5,11})(?![\d\w])")
+    for line, col, value in _hits(bare, text, group=1):
+        if value in BENIGN_NUMBERS or VERSION_RE.match(value):
+            continue
+        at = _offset(text, line, col)
+        if at and text[at - 1] in ":/":  # 端口、时间 12:34
+            continue
+        if value.lstrip("0") == "":
+            continue
+        out.append((line, col, value))
     return out
 
 
@@ -144,8 +177,10 @@ def rule_email_warn(text: str) -> list[tuple[int, int, str]]:
 
 RULES = [
     ("路径", "block", rule_paths),
+    ("昵称", "block", rule_words),
     ("凭据", "block", rule_keys),
     ("QQ号", "block", rule_qq),
+    ("裸QQ号", "block", rule_qq_bare),
     ("手机号", "block", rule_phone),
     ("裸数字", "warn", rule_numbers_warn),
     ("邮箱", "warn", rule_email_warn),
@@ -203,6 +238,8 @@ def main(argv: list[str]) -> int:
     checked = 0
 
     for rel in files:
+        if rel == "scripts/privacy_gate.py":  # 名单就写在这儿，不查自己
+            continue
         if BLOCKED_FILES.search(rel) or any(rel.startswith(p) or f"/{p}" in rel for p in BLOCKED_PATHS):
             blocked.append(f"路径  {rel}  ← 这类文件不许入库")
             continue

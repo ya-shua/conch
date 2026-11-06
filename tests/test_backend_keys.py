@@ -1,6 +1,7 @@
 ﻿"""用一个假的 OpenAI 端点证明轮换逻辑：第 1 把 401、第 2 把 200。"""
 import asyncio, json, sys
-sys.path.insert(0, r"D:\AI\项目根")
+from pathlib import Path
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
 from aiohttp import web
 from types import SimpleNamespace
 

@@ -13,7 +13,7 @@ PID 记两处：本进程内存一份（_PIDS），data/launcher-pids.json 一�
         "id": "snowluma",
         "name": "SnowLuma（QQ 网关）",
         "note": "QQ 收发都走它，端口 3000 / 3001",
-        "cwd": "D:\\\\AI\\\\QQ阿鱼\\\\SnowLuma",
+        "cwd": "D:\\\\AI\\\\SnowLuma",
         "cmd": "launcher.bat",
         "port": 3000,
         "secrets": [{"key": "token", "label": "WS Token", "env": "SNOWLUMA_TOKEN"}]

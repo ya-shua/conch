@@ -4,7 +4,7 @@ Windows 有一条规则：**进程的完整性级别 = 父进程与可执行文�
 如果 exe 所在的目录被打了 `Low` 标签，那么从这里启动的进程一律是 `Low`，
 它的子进程、孙进程也全是 `Low`。
 
-DSH 的沙箱会给工作区打这种标签。于是装在 `D:\AI\项目根` 下的海螺
+DSH 的沙箱会给工作区打这种标签。于是装在 `D:\AI\conch` 下的海螺
 （`.venv\Scripts\pythonw.exe`）一启动就是 Low，被它拉起来的 SnowLuma、情绪、
 留影、娱乐、环形的心也全是 Low。
 
@@ -35,9 +35,9 @@ DSH 的沙箱会给工作区打这种标签。于是装在 `D:\AI\项目根` 下
 ```powershell
 $me = "$env:USERDOMAIN\$env:USERNAME"
 
-icacls 'D:\AI\项目根'            /setintegritylevel '(OI)(CI)Medium' /T /C
-icacls 'D:\AI\项目根\qqbridge'   /grant "${me}:(OI)(CI)F"
-icacls 'D:\AI\项目根\qqbridge'   /setintegritylevel '(OI)(CI)Medium' /T /C /Q
+icacls 'D:\AI\conch'            /setintegritylevel '(OI)(CI)Medium' /T /C
+icacls 'D:\AI\conch\qqbridge'   /grant "${me}:(OI)(CI)F"
+icacls 'D:\AI\conch\qqbridge'   /setintegritylevel '(OI)(CI)Medium' /T /C /Q
 ```
 
 第一条处理工作区根；第二、三条处理 `qqbridge`（根目录本身也要改，否则新建的文件还是继承 Low）。
