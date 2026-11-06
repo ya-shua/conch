@@ -10,14 +10,19 @@ import hashlib
 import hmac
 import json
 import secrets
+import shutil
+import stat
 import time
 from pathlib import Path
 from typing import Any
 
+import aiohttp
 from aiohttp import web
 
+from ... import __version__ as CONCH_VERSION
 from .. import log
 from ..config import DEFAULT_STRATEGY
+from .. import websearch
 
 log_ = log.get("panel")
 
@@ -151,6 +156,15 @@ async def index(_request: web.Request) -> web.Response:
 # ---------- 状态 ----------
 
 
+def _integrity_level() -> str:
+    try:
+        from qqbridge.core import integrity as _ig
+
+        return _ig.current()
+    except Exception:
+        return "未知"
+
+
 async def api_status(request: web.Request) -> web.Response:
     app = request.app
     state = app["state"]
@@ -163,6 +177,7 @@ async def api_status(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
+            "version": CONCH_VERSION,
             "connected": bool(onebot and onebot.connected),
             "self_id": (onebot.self_id if onebot else ""),
             "ws_url": app["cfg"].onebot.ws_url,
@@ -173,28 +188,290 @@ async def api_status(request: web.Request) -> web.Response:
             "merge_window_ms": app["cfg"].merge_window_ms,
             "api_key_set": bool(app["cfg"].model.api_key),
             "today": total,
+            "integrity": _integrity_level(),
         }
     )
 
 
+def _display_names(app) -> dict[str, str]:
+    """用户给插件/服务起的名字：{id: 名字}。没起过的就不在表里。"""
+    cfg = app["cfg"]
+    raw = getattr(cfg, "raw", None) or {}
+    got = raw.get("display_names")
+    if not isinstance(got, dict):
+        return {}
+    return {str(k): str(v) for k, v in got.items() if str(v).strip()}
+
+
+def _plugin_meta(path: str) -> dict[str, Any]:
+    """读插件目录里 metadata.json 的可选字段（页面地址、是否有设置）。"""
+    try:
+        meta = json.loads((Path(path) / "metadata.json").read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+    extra: dict[str, Any] = {}
+    if meta.get("name_en"):
+        extra["name_en"] = str(meta["name_en"])
+    if meta.get("page"):
+        extra["page"] = str(meta["page"])
+    schema = meta.get("settings")
+    if isinstance(schema, list) and schema:
+        extra["settings"] = True
+        extra["schema"] = [f for f in schema if isinstance(f, dict) and f.get("key")]
+    elif (Path(path) / "config.json").exists():
+        extra["settings"] = True
+        extra["schema"] = []
+    return extra
+
+
 async def api_plugins(request: web.Request) -> web.Response:
-    return web.json_response({"ok": True, "plugins": request.app["state"]["loader"].list()})
+    items = request.app["state"]["loader"].list()
+    names = _display_names(request.app)
+    for item in items:
+        item.update(_plugin_meta(str(item.get("path") or "")))
+        item["alias"] = names.get(str(item.get("id")), "")
+    return web.json_response({"ok": True, "plugins": items})
+
+
+def _plugin_default(meta, key: str, default=None):
+    schema = getattr(meta, "extra", None) or {}
+    return default
+
+
+def _schema_of(meta) -> list[dict]:
+    raw = getattr(meta, "raw", None) or {}
+    schema = raw.get("settings")
+    if isinstance(schema, list):
+        return [f for f in schema if isinstance(f, dict) and f.get("key")]
+    return []
+
+
+def _coerce(field: dict, value):
+    """按 schema 把表单值变成该有的类型，越界就夹回范围里。"""
+    typ = str(field.get("type") or "str")
+    if typ == "bool":
+        if isinstance(value, str):
+            return value.strip().lower() in ("1", "true", "yes", "on", "是")
+        return bool(value)
+    if typ in ("int", "number"):
+        try:
+            num = int(float(value))
+        except (TypeError, ValueError):
+            num = int(field.get("default") or 0)
+        lo = field.get("min")
+        hi = field.get("max")
+        if isinstance(lo, (int, float)):
+            num = max(int(lo), num)
+        if isinstance(hi, (int, float)):
+            num = min(int(hi), num)
+        return num
+    if typ == "float":
+        try:
+            return float(value)
+        except (TypeError, ValueError):
+            return float(field.get("default") or 0)
+    text = str(value if value is not None else "")
+    limit = field.get("maxLength")
+    if isinstance(limit, int) and limit > 0:
+        text = text[:limit]
+    return text
+
+
+async def api_plugin_config(request: web.Request) -> web.Response:
+    """插件自己的 config.json：支持表单（schema）和原样 JSON 两种改法。"""
+    pid = request.match_info["pid"]
+    loader = request.app["state"]["loader"]
+    meta = loader.metas.get(pid)
+    if meta is None:
+        return web.json_response({"error": "no such plugin"}, status=404)
+    path = Path(str(getattr(meta, "path", ""))) / "config.json"
+    schema = _schema_of(meta)
+
+    def _read() -> dict:
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text(encoding="utf-8-sig") or "{}")
+        except Exception:
+            return {}
+
+    if request.method == "GET":
+        current = _read()
+        values = {}
+        for field in schema:
+            key = str(field["key"])
+            values[key] = current.get(key, field.get("default"))
+        return web.json_response(
+            {
+                "ok": True,
+                "path": str(path),
+                "schema": schema,
+                "values": values,
+                "raw": current,
+                "text": json.dumps(current, ensure_ascii=False, indent=2),
+            }
+        )
+
+    body: dict[str, Any] = await request.json()
+
+    # 表单提交：{"values": {...}} 只改传上来的字段
+    if isinstance(body.get("values"), dict):
+        current = _read()
+        updated = body["values"]
+        by_key = {str(f["key"]): f for f in schema}
+        for key, value in updated.items():
+            field = by_key.get(key)
+            if field is None:
+                continue
+            current[key] = _coerce(field, value)
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(current, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+        except OSError as exc:
+            return web.json_response({"error": f"写不进去：{exc}"}, status=500)
+        note = "改好了，重载这个插件就生效"
+        if body.get("reload"):
+            try:
+                if loader.status.get(pid) == "enabled":
+                    await loader.disable(pid)
+                await loader.enable(pid)
+                note = "改好了，插件已重载"
+            except Exception as exc:
+                note = f"配置写了，但重载失败：{exc}"
+        return web.json_response({"ok": True, "path": str(path), "note": note, "values": current})
+
+    # 原样 JSON 文本（老入口，留着）
+    text = str(body.get("text") or "").strip()
+    try:
+        parsed = json.loads(text or "{}")
+    except Exception as exc:
+        return web.json_response({"error": f"不是合法 JSON：{exc}"}, status=400)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(parsed, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        return web.json_response({"error": f"写不进去：{exc}"}, status=500)
+    return web.json_response({"ok": True, "path": str(path), "note": "重启该插件或海螺后生效"})
+
+
+# ---------- 插件管理 ----------
+
+
+def _plugin_dirs(cfg) -> list[Path]:
+    return [Path(cfg.plugins_dir), *[Path(p) for p in cfg.plugin_paths]]
+
+
+def _find_git() -> str | None:
+    found = shutil.which("git")
+    if found:
+        return found
+    for cand in (r"D:\Git\cmd\git.exe", r"C:\Program Files\Git\cmd\git.exe"):
+        if Path(cand).exists():
+            return cand
+    return None
+
+
+def _rmtree_force(path: Path) -> bool:
+    """Windows 上插件目录里常有只读文件，先改权限再删。"""
+
+    def _on_error(func, target, _exc):
+        try:
+            os.chmod(target, stat.S_IWRITE)
+            func(target)
+        except Exception:
+            pass
+
+    try:
+        shutil.rmtree(path, onerror=_on_error)
+        return not path.exists()
+    except Exception:
+        return False
+
+
+async def api_plugin_remove(request: web.Request) -> web.Response:
+    """删掉一个插件目录。只允许删 plugins/ 里自己装进来的。"""
+    app = request.app
+    pid = request.match_info["pid"]
+    loader = app["state"]["loader"]
+    cfg = app["cfg"]
+    meta = loader.metas.get(pid)
+    if meta is None:
+        return web.json_response({"error": "没有这个插件"}, status=404)
+    if getattr(meta, "builtin", False):
+        return web.json_response({"error": "海螺自带的插件删不了，只能关掉"}, status=400)
+    target = Path(str(getattr(meta, "path", ""))).resolve()
+    plugins_dir = Path(cfg.plugins_dir).resolve()
+    if plugins_dir not in target.parents:
+        return web.json_response({"error": "这个插件不在 plugins/ 目录里，得自己去删"}, status=400)
+    if loader.status.get(pid) == "enabled":
+        try:
+            await loader.disable(pid)
+        except Exception:
+            pass
+    ok = _rmtree_force(target)
+    loader.scan()
+    if not ok:
+        return web.json_response({"error": "删不干净，可能有文件被占用"}, status=500)
+    return web.json_response({"ok": True, "removed": pid})
+
+
+async def api_reload(request: web.Request) -> web.Response:
+    pid = request.match_info["pid"]
+    loader = request.app["state"]["loader"]
+    if pid not in loader.metas:
+        return web.json_response({"error": "没有这个插件"}, status=404)
+    try:
+        await loader.reload(pid)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)[:200]}, status=500)
+    return web.json_response({"ok": True, "status": loader.status.get(pid)})
+
+
+async def api_reload_all(request: web.Request) -> web.Response:
+    loader = request.app["state"]["loader"]
+    result = await loader.reload_all()
+    return web.json_response({"ok": True, **result})
+
+
+def _save_enabled(app, pid: str, enabled: bool) -> None:
+    """把启用状态记进 config.json 的 plugins_enabled。"""
+    cfg = app["cfg"]
+    raw = getattr(cfg, "raw", None)
+    if not isinstance(raw, dict):
+        return
+    ids = [str(x) for x in (raw.get("plugins_enabled") or [])]
+    if enabled and pid not in ids:
+        ids.append(pid)
+    if not enabled:
+        ids = [x for x in ids if x != pid]
+    raw["plugins_enabled"] = ids
+    try:
+        Path(app["cfg_path"]).write_text(
+            json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception:
+        pass
 
 
 async def api_toggle(request: web.Request) -> web.Response:
     pid = request.match_info["pid"]
-    loader = request.app["state"]["loader"]
+    app = request.app
+    loader = app["state"]["loader"]
     if pid not in loader.metas:
-        return web.json_response({"error": "no such plugin"}, status=404)
+        return web.json_response({"error": "没有这个插件"}, status=404)
     body: dict[str, Any] = await request.json()
+    want = bool(body.get("enabled"))
     try:
-        if body.get("enabled", True):
-            await loader.enable(pid)
+        if want:
+            if loader.status.get(pid) != "enabled":
+                await loader.enable(pid)
         else:
-            await loader.disable(pid)
+            if loader.status.get(pid) == "enabled":
+                await loader.disable(pid)
     except Exception as exc:
-        return web.json_response({"error": str(exc)}, status=500)
-    return web.json_response({"ok": True, "status": loader.status.get(pid)})
+        return web.json_response({"error": str(exc)[:200]}, status=500)
+    _save_enabled(app, pid, want)
+    return web.json_response({"ok": True, "enabled": want, "status": loader.status.get(pid)})
 
 
 # ---------- 用量 ----------
@@ -245,28 +522,78 @@ async def api_update_apply(request: web.Request) -> web.Response:
     return web.json_response(data)
 
 
-async def api_groups(request: web.Request) -> web.Response:
-    """她已经能看到的群（遥控发消息时用的就是这个名单）。"""
+async def api_update_restart(request: web.Request) -> web.Response:
+    """更新完重启自己：先回 ok，再换进程。"""
+    from .. import updater
+
+    data = await updater.restart_self()
+    return web.json_response(data)
+
+
+def _store_kv(request: web.Request, key: str, default):
+    """插件改过名（qq_bridge → conch），两个命名空间都认。"""
     store = request.app["state"]["store"]
-    groups = {}
-    # 插件改过名（qq_bridge → conch），两个键都认
     for ns in ("conch", "qq_bridge"):
         try:
-            groups = store.kv_get(ns, "groups", {}) or {}
+            got = store.kv_get(ns, key, None)
         except Exception:
-            groups = {}
-        if groups:
-            break
+            got = None
+        if got:
+            return got
+    return default
+
+
+async def api_groups(request: web.Request) -> web.Response:
+    """她能看见的聊天：群 + 私聊。遥控发消息、白名单都对着这份名单。"""
     allow = request.app["cfg"].allow
-    items = [
+    groups = _store_kv(request, "groups", {}) or {}
+
+    # 好友名单：优先现拉，拉不到就用上次存的
+    friends = _store_kv(request, "friends", {}) or {}
+    client = request.app["state"].get("onebot")
+    if client is not None:
+        try:
+            data = await client.call("get_friend_list")
+            got = {}
+            for it in data or []:
+                uid = str(it.get("user_id") or "").strip()
+                if not uid:
+                    continue
+                got[uid] = str(it.get("remark") or it.get("nickname") or uid).strip() or uid
+            if got:
+                friends = got
+                try:
+                    store = request.app["state"]["store"]
+                    store.kv_put("conch", "friends", dict(got))
+                except Exception:
+                    pass
+        except Exception:
+            pass
+
+    chats = [
         {
-            "group_id": gid,
+            "type": "group",
+            "id": gid,
             "name": name or gid,
             "allowed": (not allow.groups) or gid in allow.groups,
+            "denied": gid in allow.deny_groups,
         }
         for gid, name in sorted(groups.items(), key=lambda kv: kv[0])
+    ] + [
+        {
+            "type": "private",
+            "id": uid,
+            "name": name or uid,
+            "allowed": (not allow.private) or uid in allow.private,
+            "denied": uid in allow.deny_private,
+        }
+        for uid, name in sorted(friends.items(), key=lambda kv: kv[0])
     ]
-    return web.json_response({"ok": True, "groups": items})
+
+    groups_only = [c for c in chats if c["type"] == "group"]
+    return web.json_response(
+        {"ok": True, "chats": chats, "groups": groups_only, "total": len(chats)}
+    )
 
 
 async def api_settings_get(request: web.Request) -> web.Response:
@@ -286,6 +613,7 @@ async def api_settings_get(request: web.Request) -> web.Response:
                 "allow_all_when_empty": cfg.allow.allow_all_when_empty,
             },
             "strategy": strategy,
+            "persona": str(raw.get("persona") or "default"),
             "model": {
                 "base_url": cfg.model.base_url,
                 "model": cfg.model.model,
@@ -303,14 +631,61 @@ async def api_settings_get(request: web.Request) -> web.Response:
 def _launch_items(request: web.Request) -> list[dict[str, Any]]:
     from .. import launchers as _launchers
 
-    return _launchers.load(request.app["cfg_path"])
+    roots: list[str] = []
+    cfg = request.app.get("cfg")
+    for d in (getattr(cfg, "plugins_dir", "") or "",):
+        if d:
+            roots.append(str(d))
+    for d in (getattr(cfg, "plugin_paths", None) or []):
+        if d:
+            roots.append(str(d))
+    try:
+        return _launchers.load(request.app["cfg_path"], plugin_roots=roots)
+    except TypeError:  # 老签名兜底
+        return _launchers.load(request.app["cfg_path"])
 
 
 async def api_launchers(request: web.Request) -> web.Response:
     from .. import launchers as _launchers
 
     items = _launch_items(request)
-    return web.json_response({"items": [_launchers.status(i) for i in items]})
+    names = _display_names(request.app)
+    out = []
+    for i in items:
+        row = _launchers.status(i)
+        row["alias"] = names.get(str(row.get("id")), "")
+        out.append(row)
+    return web.json_response({"items": out})
+
+
+async def api_name_set(request: web.Request) -> web.Response:
+    """给插件/服务起个名字（空字符串 = 恢复原名）。"""
+    app = request.app
+    body: dict[str, Any] = await request.json()
+    pid = str(body.get("id") or "").strip()
+    name = str(body.get("name") or "").strip()[:24]
+    if not pid:
+        return web.json_response({"error": "要指定是哪个"}, status=400)
+
+    cfg = app["cfg"]
+    raw = getattr(cfg, "raw", None)
+    if not isinstance(raw, dict):
+        return web.json_response({"error": "配置是只读的"}, status=500)
+    names = raw.get("display_names")
+    if not isinstance(names, dict):
+        names = {}
+    if name:
+        names[pid] = name
+    else:
+        names.pop(pid, None)
+    raw["display_names"] = names
+    try:
+        Path(app["cfg_path"]).write_text(
+            json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except Exception as exc:
+        return web.json_response({"error": f"没写进 config.json：{exc}"}, status=500)
+    return web.json_response({"ok": True, "id": pid, "alias": name})
 
 
 async def api_launcher_start(request: web.Request) -> web.Response:
@@ -342,6 +717,67 @@ async def api_launcher_start(request: web.Request) -> web.Response:
         return web.json_response({"error": str(exc)}, status=500)
 
 
+async def api_launcher_stop_all(request: web.Request) -> web.Response:
+    """一键关闭：把所有从控制台起的服务全停掉。"""
+    from .. import launchers as _launchers
+
+    items = _launch_items(request)
+    return web.json_response(_launchers.stop_all(items))
+
+
+async def api_shutdown(request: web.Request) -> web.Response:
+    """关掉海螺自己。先回话，再退出，免得前端看到连接被重置。"""
+    import asyncio as _asyncio
+    import os as _os
+
+    log_.info("收到一键关闭，海螺退出")
+    _asyncio.get_running_loop().call_later(0.4, lambda: _os._exit(0))
+    return web.json_response({"ok": True, "message": "海螺正在退出"})
+
+
+async def api_launcher_restart(request: web.Request) -> web.Response:
+    """服务重启 = 停 + 起（插件那边叫重载，这边叫重启，一个意思）。"""
+    from .. import launchers as _launchers
+
+    lid = request.match_info["id"]
+    body: dict[str, Any] = {}
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    items = _launch_items(request)
+    item = next((i for i in items if str(i.get("id")) == lid), None)
+    if item is None:
+        return web.json_response({"error": "no such launcher"}, status=404)
+    _launchers.stop(item)
+    try:
+        result = _launchers.start(item, body.get("secrets") or None)
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
+    return web.json_response({"ok": True, **result})
+
+
+async def api_launcher_log(request: web.Request) -> web.Response:
+    """看这个服务最近的日志（就在 data/logs/<id>.log）。"""
+    from .. import launchers as _launchers
+
+    lid = request.match_info["id"]
+    try:
+        lines = max(20, min(800, int(request.query.get("lines", "120"))))
+    except ValueError:
+        lines = 120
+    path = _launchers.log_file(lid)
+    if not path.exists():
+        return web.json_response({"ok": True, "path": str(path), "text": "（还没有日志）"})
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace")
+    except OSError as exc:
+        return web.json_response({"error": f"读不到：{exc}"}, status=500)
+    tail = "\n".join(text.splitlines()[-lines:])
+    return web.json_response({"ok": True, "path": str(path), "text": tail})
+
+
 async def api_launcher_stop(request: web.Request) -> web.Response:
     from .. import launchers as _launchers
 
@@ -351,6 +787,116 @@ async def api_launcher_stop(request: web.Request) -> web.Response:
     if item is None:
         return web.json_response({"error": "没有这一条"}, status=404)
     return web.json_response(_launchers.stop(item))
+
+
+def _mask_key(key: str) -> str:
+    key = str(key or "")
+    if len(key) <= 10:
+        return ("*" * max(0, len(key) - 4)) + key[-4:] if key else ""
+    return f"{key[:6]}…{key[-4:]}"
+
+
+def _save_model_keys(request: web.Request, keys: list[dict]) -> None:
+    """写回 config.json（model.keys），顺手让 model.api_key 跟第一把保持一致。"""
+    cfg = request.app["cfg"]
+    raw = _raw_config(request)
+    model_raw = raw.setdefault("model", {})
+    clean = [
+        {"key": str(k.get("key") or "").strip(), "label": str(k.get("label") or "").strip()[:40]}
+        for k in keys
+        if str(k.get("key") or "").strip()
+    ]
+    model_raw["keys"] = clean
+    if clean:
+        model_raw["api_key"] = clean[0]["key"]
+    cfg.model.keys = clean
+    if clean:
+        cfg.model.api_key = clean[0]["key"]
+    Path(request.app["cfg_path"]).write_text(
+        json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+async def api_model_keys(request: web.Request) -> web.Response:
+    """看现在有几把 Key、按什么顺序、用着哪把。"""
+    backend = request.app["state"].get("backend")
+    keys = list(request.app["cfg"].model.keys or [])
+    if not keys:
+        single = str(request.app["cfg"].model.api_key or "").strip()
+        if single:
+            keys = [{"key": single, "label": "默认"}]
+    out = [
+        {"index": i, "label": k.get("label") or "", "tail": k["key"][-4:], "masked": _mask_key(k["key"])}
+        for i, k in enumerate(keys)
+    ]
+    current = backend.current_index() if backend is not None else 0
+    return web.json_response(
+        {"ok": True, "keys": out, "current": current, "label": backend.current_label() if backend else ""}
+    )
+
+
+async def api_model_keys_put(request: web.Request) -> web.Response:
+    """加 / 删 / 上移下移 / 改备注。"""
+    cfg = request.app["cfg"]
+    body: dict[str, Any] = await request.json()
+    action = str(body.get("action") or "").strip()
+    keys = [
+        {"key": str(k.get("key") or "").strip(), "label": str(k.get("label") or "").strip()[:40]}
+        for k in (cfg.model.keys or [])
+        if str(k.get("key") or "").strip()
+    ]
+    if not keys and cfg.model.api_key:
+        keys = [{"key": cfg.model.api_key, "label": "默认"}]
+
+    try:
+        index = int(body.get("index", -1))
+    except (TypeError, ValueError):
+        index = -1
+
+    if action == "add":
+        key = str(body.get("key") or "").strip()
+        if not key:
+            return web.json_response({"error": "Key 不能空"}, status=400)
+        if any(k["key"] == key for k in keys):
+            return web.json_response({"error": "这把 Key 已经在列表里了"}, status=400)
+        pos = index if 0 <= index <= len(keys) else len(keys)
+        keys.insert(pos, {"key": key, "label": str(body.get("label") or "").strip()[:40]})
+    elif action == "remove":
+        if not (0 <= index < len(keys)):
+            return web.json_response({"error": "没有这一把"}, status=404)
+        keys.pop(index)
+    elif action == "move":
+        delta = -1 if str(body.get("dir") or "") == "up" else 1
+        if not (0 <= index < len(keys)):
+            return web.json_response({"error": "没有这一把"}, status=404)
+        target = index + delta
+        if 0 <= target < len(keys):
+            keys[index], keys[target] = keys[target], keys[index]
+    elif action == "label":
+        if not (0 <= index < len(keys)):
+            return web.json_response({"error": "没有这一把"}, status=404)
+        keys[index]["label"] = str(body.get("label") or "").strip()[:40]
+    elif action == "replace":
+        if not (0 <= index < len(keys)):
+            return web.json_response({"error": "没有这一把"}, status=404)
+        key = str(body.get("key") or "").strip()
+        if not key:
+            return web.json_response({"error": "Key 不能空"}, status=400)
+        keys[index]["key"] = key
+        if body.get("label") is not None:
+            keys[index]["label"] = str(body.get("label") or "").strip()[:40]
+    else:
+        return web.json_response({"error": "不认识的操作"}, status=400)
+
+    try:
+        _save_model_keys(request, keys)
+    except OSError as exc:
+        return web.json_response({"error": f"写不进去：{exc}"}, status=500)
+
+    backend = request.app["state"].get("backend")
+    if backend is not None:
+        backend._i = 0  # 结构变了，从第一把重新算
+    return web.json_response({"ok": True, "count": len(keys)})
 
 
 async def api_models_list(request: web.Request) -> web.Response:
@@ -443,6 +989,14 @@ async def api_settings_put(request: web.Request) -> web.Response:
         merged["cooldown_sec"] = max(0, int(merged.get("cooldown_sec", 20)))
         merged["max_per_hour"] = max(1, int(merged.get("max_per_hour", 30)))
         merged["max_consecutive"] = max(1, int(merged.get("max_consecutive", 3)))
+        merged["wake_gap_sec"] = max(0, int(merged.get("wake_gap_sec", 0)))
+        merged["sleep_after_sec"] = max(0, int(merged.get("sleep_after_sec", 0)))
+        merged["min_chars"] = max(0, int(merged.get("min_chars", 0) or 0))
+        for key in ("quiet_start", "quiet_end"):
+            value = str(merged.get(key) or "").strip()
+            if value and not (len(value) == 5 and value[2] == ":"):
+                value = ""
+            merged[key] = value
         raw["strategy"] = merged
         changed.append("strategy")
 
@@ -489,6 +1043,27 @@ def _roles_dir(request: web.Request) -> Path:
 def _safe_role(name: str) -> str:
     cleaned = "".join(ch for ch in name if ch.isalnum() or ch in "-_ ")
     return cleaned.strip()
+
+
+async def api_persona_set(request: web.Request) -> web.Response:
+    """换当前人格（config.json 的 persona）。"""
+    body: dict[str, Any] = await request.json()
+    name = _safe_role(str(body.get("name") or "").strip())
+    if not name:
+        return web.json_response({"error": "没说要哪个"}, status=400)
+    folder = _roles_dir(request)
+    if not (folder / f"{name}.md").exists():
+        return web.json_response({"error": f"没有「{name}」这个人格"}, status=404)
+    raw = _raw_config(request)
+    raw["persona"] = name
+    try:
+        Path(request.app["cfg_path"]).write_text(
+            json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+        )
+    except OSError as exc:
+        return web.json_response({"error": f"写不进去：{exc}"}, status=500)
+    request.app["cfg"].raw["persona"] = name
+    return web.json_response({"ok": True, "persona": name})
 
 
 async def api_roles_list(request: web.Request) -> web.Response:
@@ -567,6 +1142,138 @@ async def api_messages_clear(request: web.Request) -> web.Response:
 # ---------- 词库 ----------
 
 
+async def api_stickers(request: web.Request) -> web.Response:
+    """收藏到的表情包列表，可按来源过滤。"""
+    store = request.app["state"]["store"]
+    try:
+        limit = max(1, min(500, int(request.query.get("limit", "200"))))
+    except ValueError:
+        limit = 200
+    source = str(request.query.get("source") or "")
+    fav = store.sticker_count(source="qq_favorite")
+    total = store.sticker_count()
+    return web.json_response(
+        {
+            "ok": True,
+            "count": total,
+            "fav_count": fav,
+            "collected_count": total - fav,
+            "items": store.sticker_list(limit=limit, source=source),
+        }
+    )
+
+
+async def api_stickers_sync(request: web.Request) -> web.Response:
+    """立刻同步一次 QQ「我的表情」。"""
+    state = request.app["state"]
+    stickers = state.get("stickers")
+    if stickers is None:
+        return web.json_response({"error": "表情包没就绪"}, status=500)
+    try:
+        added = await stickers.sync(force=True)
+    except Exception as exc:
+        return web.json_response({"error": f"同步失败：{exc}"}, status=500)
+    store = state["store"]
+    return web.json_response(
+        {"ok": True, "added": added, "count": store.sticker_count(),
+         "fav_count": store.sticker_count(source="qq_favorite")}
+    )
+
+
+async def api_stickers_config(request: web.Request) -> web.Response:
+    """表情包的设置：GET 拿字段和当前值，PUT 存回去（写 config.json）。"""
+    app = request.app
+    stickers = app["state"].get("stickers")
+    if stickers is None:
+        return web.json_response({"error": "表情包没就绪"}, status=500)
+    if request.method == "GET":
+        return web.json_response({"ok": True, "fields": stickers.schema(), "values": stickers.settings()})
+
+    body: dict[str, Any] = await request.json()
+    values = body.get("values") if isinstance(body.get("values"), dict) else body
+    if not isinstance(values, dict):
+        return web.json_response({"error": "要 {values: {...}}"}, status=400)
+    saved = stickers.apply(values)
+
+    # 落到 config.json：只动 stickers 这一块
+    cfg = app["cfg"]
+    raw = getattr(cfg, "raw", None)
+    if isinstance(raw, dict):
+        raw["stickers"] = saved
+        try:
+            Path(app["cfg_path"]).write_text(
+                json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            return web.json_response({"ok": True, "values": saved, "warning": f"没写进 config.json：{exc}"})
+    return web.json_response({"ok": True, "values": saved})
+
+
+async def api_sticker_remark(request: web.Request) -> web.Response:
+    """给一张表情起个名（备注），发的时候可以按名字找。"""
+    store = request.app["state"]["store"]
+    sid = request.match_info["sid"]
+    body: dict[str, Any] = await request.json()
+    remark = str(body.get("remark") or "").strip()[:40]
+    if not store.sticker_set_remark(int(sid), remark):
+        return web.json_response({"error": "没这张"}, status=404)
+    return web.json_response({"ok": True, "remark": remark})
+
+
+async def api_sticker_send(request: web.Request) -> web.Response:
+    """把一张表情发到指定会话（面板里手动试发）。"""
+    store = request.app["state"]["store"]
+    loader = request.app["state"]["loader"]
+    sid = request.match_info["sid"]
+    row = store.sticker_get(int(sid))
+    if row is None:
+        return web.json_response({"error": "没这张"}, status=404)
+    body: dict[str, Any] = await request.json()
+    conv = str(body.get("conv_id") or "").strip()
+    if not conv:
+        return web.json_response({"error": "要指定发给谁（conv_id）"}, status=400)
+    stickers = request.app["state"].get("stickers")
+    if stickers is None:
+        return web.json_response({"error": "表情包插件没就绪"}, status=400)
+    ok = await stickers.send(conv, row)
+    if not ok:
+        return web.json_response({"error": "没发出去，看看日志"}, status=500)
+    return web.json_response({"ok": True, "conv_id": conv})
+
+
+async def api_sticker_file(request: web.Request) -> web.Response:
+    """把收藏的图发给面板看。"""
+    from pathlib import Path as _P
+
+    store = request.app["state"]["store"]
+    sid = request.match_info["sid"]
+    row = next((r for r in store.sticker_list(limit=500) if str(r["id"]) == str(sid)), None)
+    if not row or not row.get("file"):
+        raise web.HTTPNotFound()
+    path = _P(str(row["file"]))
+    if not path.exists():
+        raise web.HTTPNotFound()
+    return web.FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
+
+
+async def api_sticker_delete(request: web.Request) -> web.Response:
+    from pathlib import Path as _P
+
+    store = request.app["state"]["store"]
+    sid = request.match_info["sid"]
+    row = next((r for r in store.sticker_list(limit=500) if str(r["id"]) == str(sid)), None)
+    if not row:
+        raise web.HTTPNotFound()
+    store.sticker_remove(int(sid))
+    file = str(row.get("file") or "")
+    if file:
+        try:
+            _P(file).unlink(missing_ok=True)
+        except OSError:
+            pass
+    return web.json_response({"ok": True})
+
+
 async def api_lexicon(request: web.Request) -> web.Response:
     store = request.app["state"]["store"]
     return web.json_response({"ok": True, "items": store.lexicon_list()})
@@ -583,6 +1290,134 @@ async def api_lexicon_add(request: web.Request) -> web.Response:
         kind = "slang"
     store.lexicon_add(term, kind, str(body.get("note") or ""))
     return web.json_response({"ok": True})
+
+
+LEX_SYS = (
+    "你在帮一个 QQ 机器人理解群里的黑话。只输出一句中文解释，"
+    "不要引号、不要客套、不要重复词条本身，不要写来源。60 字以内。"
+)
+
+
+def _first_sentence(items: list[dict[str, Any]]) -> str:
+    """从搜索结果里挑一句能看的：第一条摘要的第一句。"""
+    import re as _re
+
+    for it in items:
+        raw = str(it.get("snippet") or "").strip()
+        if len(raw) < 12:
+            continue
+        raw = _re.sub(r"^\d+[\.、]\s*", "", raw)
+        raw = raw.split("。")[0].strip(" .，,")
+        if len(raw) >= 10:
+            return raw[:100]
+    for it in items:
+        title = str(it.get("title") or "").strip()
+        if title:
+            return title[:60]
+    return ""
+
+
+async def api_lexicon_explain(request: web.Request) -> web.Response:
+    """联网解释一个词：搜一遍，让模型压成一句。解释完留一条记录。"""
+    state = request.app["state"]
+    store = state["store"]
+    backend = state.get("backend")
+    body: dict[str, Any] = await request.json()
+    term = str(body.get("term") or "").strip()[:60]
+    if not term:
+        return web.json_response({"error": "词条不能为空"}, status=400)
+
+    evidence: list[dict[str, str]] = []
+    material = ""
+    warn = ""
+    items = await websearch.search(f"{term} 是什么意思 梗", limit=6)
+    if not items:
+        items = await websearch.search(f"{term} 网络用语", limit=6)
+    evidence = [{"title": i["title"], "url": i["url"]} for i in items if i.get("title")][:6]
+    material = websearch.as_material(items)
+    if not material:
+        warn = "联网没搜到东西（可能断网）"
+
+    prompt = f"群友说的词：「{term}」。"
+    if material:
+        prompt += f"\n\n网上的说法：\n{material}"
+    prompt += "\n\n请写出这个词在群聊语境里的含义。"
+
+    source = "联网"
+    meaning = ""
+    try:
+        if backend is None:
+            raise RuntimeError("模型还没接上")
+        meaning, _usage = await backend.chat(
+            [{"role": "system", "content": LEX_SYS},
+             {"role": "user", "content": prompt}],
+            temperature=0.3,
+        )
+    except Exception as exc:
+        text = str(exc)[:160]
+        if material:  # 模型不通：先给搜到的原文，别让功能整个废掉
+            meaning = _first_sentence(items)
+            source = "联网·摘录"
+            warn = f"模型这会儿不通（{text}），先给你搜到的原文"
+        else:
+            return web.json_response({"error": f"模型不通：{text}"}, status=502)
+
+    meaning = meaning.strip().strip("「」“”\"'").strip().split("\n")[0][:300]
+    if not meaning:
+        return web.json_response({"error": "模型没给出内容"}, status=502)
+
+    save = str(body.get("save") or "1") != "0"
+    if save:
+        store.lexicon_set_note(term, meaning, source)
+    hid = store.lex_history_add(term, meaning, source, material or "")
+    return web.json_response(
+        {"ok": True, "term": term, "meaning": meaning, "source": source,
+         "evidence": evidence, "warn": warn, "history_id": hid, "saved": save}
+    )
+
+
+async def api_lexicon_note(request: web.Request) -> web.Response:
+    """人工改含义。"""
+    store = request.app["state"]["store"]
+    body: dict[str, Any] = await request.json()
+    term = str(body.get("term") or "").strip()[:60]
+    note = str(body.get("note") or "").strip()[:300]
+    if not term:
+        return web.json_response({"error": "词条不能为空"}, status=400)
+    store.lexicon_set_note(term, note, "人工")
+    return web.json_response({"ok": True, "term": term, "note": note, "source": "人工"})
+
+
+async def api_lex_history(request: web.Request) -> web.Response:
+    """解释记录：搜得到的都在这儿。"""
+    store = request.app["state"]["store"]
+    q = str(request.query.get("q") or "").strip()[:60]
+    return web.json_response({"ok": True, "items": store.lex_history_list(q)})
+
+
+async def api_lex_history_update(request: web.Request) -> web.Response:
+    """改一条记录的解释。"""
+    store = request.app["state"]["store"]
+    body: dict[str, Any] = await request.json()
+    hid = int(body.get("id") or 0)
+    note = str(body.get("note") or "").strip()[:300]
+    if not hid:
+        return web.json_response({"error": "缺记录 id"}, status=400)
+    n = store.lex_history_update(hid, note)
+    return web.json_response({"ok": True, "updated": n, "id": hid, "note": note})
+
+
+async def api_lex_history_default(request: web.Request) -> web.Response:
+    """把这条认定为这个词的默认解释：词库跟着改，以后她就按这条理解。"""
+    store = request.app["state"]["store"]
+    body: dict[str, Any] = await request.json()
+    hid = int(body.get("id") or 0)
+    if not hid:
+        return web.json_response({"error": "缺记录 id"}, status=400)
+    row = store.lex_history_pick(hid)
+    if not row:
+        return web.json_response({"error": "没有这条记录"}, status=404)
+    return web.json_response({"ok": True, "term": row["term"], "note": row["note"]})
 
 
 async def api_lexicon_remove(request: web.Request) -> web.Response:
@@ -873,37 +1708,167 @@ async def api_verify_model(request: web.Request) -> web.Response:
     )
 
 
+_BAD_MODEL_WORDS = (
+    "audio", "realtime", "tts", "asr", "embedding", "embed", "rerank",
+    "image", "video", "voice", "mt-", "-mt", "livetranslate", "omni", "ocr",
+)
+
+
+def _chat_model_rank(mid: str) -> tuple[int, int]:
+    """挑候选时的偏好：flash / chat 优先，花哨的多模态后放。"""
+    low = mid.lower()
+    score = 0
+    if "flash" in low:
+        score -= 4
+    if "chat" in low:
+        score -= 2
+    if "deepseek" in low:
+        score -= 3
+    if "qwen" in low:
+        score -= 1
+    if any(w in low for w in _BAD_MODEL_WORDS):
+        score += 10
+    return (score, len(mid))
+
+
+async def api_model_find(request: web.Request) -> web.Response:
+    """当前模型用不了时：从 /models 里挑几个能对话的，挨个真打一次，找能用的那个。"""
+    from dataclasses import replace
+
+    from ..backend import OpenAICompatBackend
+
+    cfg = request.app["cfg"]
+    body: dict[str, Any] = {}
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+
+    base_url = str(body.get("base_url") or cfg.model.base_url or "").strip().rstrip("/")
+    api_key = str(body.get("api_key") or cfg.model.api_key or "").strip()
+    wanted = str(body.get("model") or cfg.model.model or "").strip()
+    if not api_key or not base_url:
+        return web.json_response({"error": "Key 或接口地址还空着"}, status=400)
+
+    ids: list[str] = []
+    try:
+        async with aiohttp.ClientSession() as sess:
+            async with sess.get(
+                base_url + "/models",
+                headers={"Authorization": f"Bearer {api_key}"},
+                timeout=aiohttp.ClientTimeout(total=25),
+            ) as resp:
+                if resp.status == 200:
+                    data = await resp.json(content_type=None)
+                    raw = data.get("data") or data.get("models") or []
+                    ids = [str(m.get("id")) for m in raw if isinstance(m, dict) and m.get("id")]
+    except Exception:
+        ids = []
+
+    cands: list[str] = []
+    if wanted:
+        cands.append(wanted)
+    for mid in sorted(ids, key=_chat_model_rank):
+        if mid not in cands and not any(w in mid.lower() for w in _BAD_MODEL_WORDS):
+            cands.append(mid)
+    cands = cands[:8]
+
+    results: list[dict[str, Any]] = []
+    for mid in cands:
+        probe = replace(cfg, model=replace(cfg.model, api_key=api_key, base_url=base_url, model=mid))
+        try:
+            reply, _ = await OpenAICompatBackend(probe).chat(
+                [{"role": "user", "content": "ping"}], temperature=0
+            )
+            results.append({"model": mid, "ok": True, "reply": (reply or "").strip()[:30]})
+            return web.json_response(
+                {"ok": True, "model": mid, "results": results, "listed": len(ids)}
+            )
+        except Exception as exc:
+            results.append({"model": mid, "ok": False, "error": str(exc)[:180]})
+
+    return web.json_response(
+        {
+            "ok": False,
+            "model": "",
+            "results": results,
+            "listed": len(ids),
+            "hint": "这个 Key 在所有候选上都过不去（多半是账号没开通 / 余额到期），换 Key 或换接口地址吧。"
+            if ids
+            else "连 /models 都拿不到，先确认接口地址对不对。",
+        }
+    )
+
+
+async def ping_js(request: web.Request) -> web.Response:
+    """给启动时的转场页用：脚本能加载 = 面板已经活了。"""
+    return web.Response(
+        text="window.__conch_ready=1;",
+        content_type="application/javascript",
+        headers={"Cache-Control": "no-store"},
+    )
+
+
 def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Application:
     app = web.Application(middlewares=[guard])
     app["cfg"] = cfg
     app["state"] = state
     app["cfg_path"] = cfg_path
     app.router.add_get("/", index)
+    app.router.add_get("/ping.js", ping_js)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/plugins", api_plugins)
+    app.router.add_get("/api/plugins/{pid}/config", api_plugin_config)
+    app.router.add_put("/api/plugins/{pid}/config", api_plugin_config)
     app.router.add_post("/api/plugins/{pid}/toggle", api_toggle)
+    app.router.add_post("/api/plugins/{pid}/reload", api_reload)
+    app.router.add_post("/api/plugins/reload-all", api_reload_all)
     app.router.add_get("/api/usage/summary", api_usage)
     app.router.add_get("/api/settings", api_settings_get)
     app.router.add_put("/api/settings", api_settings_put)
     app.router.add_get("/api/roles", api_roles_list)
+    app.router.add_post("/api/persona", api_persona_set)
     app.router.add_get("/api/roles/{name}", api_role_get)
     app.router.add_put("/api/roles/{name}", api_role_put)
     app.router.add_get("/api/logs", api_logs)
     app.router.add_get("/api/messages", api_messages)
     app.router.add_get("/api/messages/convs", api_message_convs)
     app.router.add_post("/api/messages/clear", api_messages_clear)
+    app.router.add_post("/api/plugins/{pid}/remove", api_plugin_remove)
+    app.router.add_get("/api/stickers", api_stickers)
+    app.router.add_get("/api/stickers/{sid}/file", api_sticker_file)
+    app.router.add_delete("/api/stickers/{sid}", api_sticker_delete)
+    app.router.add_post("/api/stickers/sync", api_stickers_sync)
+    app.router.add_get("/api/stickers/config", api_stickers_config)
+    app.router.add_put("/api/stickers/config", api_stickers_config)
+    app.router.add_post("/api/stickers/{sid}/remark", api_sticker_remark)
+    app.router.add_post("/api/stickers/{sid}/send", api_sticker_send)
     app.router.add_get("/api/lexicon", api_lexicon)
     app.router.add_post("/api/lexicon/add", api_lexicon_add)
     app.router.add_post("/api/lexicon/remove", api_lexicon_remove)
+    app.router.add_post("/api/lexicon/explain", api_lexicon_explain)
+    app.router.add_post("/api/lexicon/note", api_lexicon_note)
+    app.router.add_get("/api/lexicon/history", api_lex_history)
+    app.router.add_post("/api/lexicon/history/update", api_lex_history_update)
+    app.router.add_post("/api/lexicon/history/default", api_lex_history_default)
     app.router.add_get("/api/approvals", api_approvals)
     app.router.add_post("/api/approvals/decide", api_approval_decide)
     app.router.add_post("/api/conversation/action", api_conversation_action)
     app.router.add_post("/api/test-chat", api_test_chat)
     app.router.add_post("/api/verify-model", api_verify_model)
+    app.router.add_post("/api/model/find", api_model_find)
+    app.router.add_get("/api/model/keys", api_model_keys)
+    app.router.add_post("/api/model/keys", api_model_keys_put)
     app.router.add_post("/api/models/list", api_models_list)
     app.router.add_get("/api/launchers", api_launchers)
+    app.router.add_post("/api/name", api_name_set)
     app.router.add_post("/api/launchers/{id}/start", api_launcher_start)
     app.router.add_post("/api/launchers/{id}/stop", api_launcher_stop)
+    app.router.add_post("/api/launchers/{id}/restart", api_launcher_restart)
+    app.router.add_get("/api/launchers/{id}/log", api_launcher_log)
+    app.router.add_post("/api/launchers/stop-all", api_launcher_stop_all)
+    app.router.add_post("/api/shutdown", api_shutdown)
     app.router.add_get("/api/auth", api_auth)
     app.router.add_post("/api/login", api_login)
     app.router.add_post("/api/logout", api_logout)
@@ -911,4 +1876,5 @@ def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Applica
     app.router.add_get("/api/groups", api_groups)
     app.router.add_get("/api/update", api_update_check)
     app.router.add_post("/api/update/apply", api_update_apply)
+    app.router.add_post("/api/update/restart", api_update_restart)
     return app

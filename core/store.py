@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 import threading
@@ -13,7 +14,7 @@ import time
 from pathlib import Path
 from typing import Any, Iterable
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 6
 
 _MIGRATIONS: list[str] = [
     # v1
@@ -93,6 +94,46 @@ _MIGRATIONS: list[str] = [
     );
     CREATE INDEX IF NOT EXISTS idx_appr_status ON approvals(status, id DESC);
     """,
+    # v3：QQ 表情包收藏
+    """
+    CREATE TABLE IF NOT EXISTS stickers (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        hash TEXT NOT NULL UNIQUE,
+        url TEXT NOT NULL DEFAULT '',
+        file TEXT NOT NULL DEFAULT '',
+        summary TEXT NOT NULL DEFAULT '',
+        sender_id TEXT NOT NULL DEFAULT '',
+        sender_name TEXT NOT NULL DEFAULT '',
+        conv_id TEXT NOT NULL DEFAULT '',
+        uses INTEGER NOT NULL DEFAULT 0,
+        ts INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_sticker_ts ON stickers(id DESC);
+    """,
+    # v4：表情包来源（qq_favorite / collected）、备注、最后一次使用
+    """
+    ALTER TABLE stickers ADD COLUMN source TEXT NOT NULL DEFAULT 'collected';
+    ALTER TABLE stickers ADD COLUMN remark TEXT NOT NULL DEFAULT '';
+    ALTER TABLE stickers ADD COLUMN last_used INTEGER NOT NULL DEFAULT 0;
+    """,
+    # v5：词库记一下这条解释是哪来的（人工 / 大模型 / 联网）
+    """
+    ALTER TABLE lexicon ADD COLUMN source TEXT NOT NULL DEFAULT '';
+    """,
+    # v6：解释记录 —— 每次解释都留档，可以搜、可以改，挑一条认定为默认
+    """
+    CREATE TABLE IF NOT EXISTS lexicon_history (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        term TEXT NOT NULL,
+        note TEXT NOT NULL DEFAULT '',
+        source TEXT NOT NULL DEFAULT '',
+        evidence TEXT NOT NULL DEFAULT '',
+        picked INTEGER NOT NULL DEFAULT 0,
+        ts INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_lexhist_term ON lexicon_history(term);
+    CREATE INDEX IF NOT EXISTS idx_lexhist_ts ON lexicon_history(id DESC);
+    """
 ]
 
 
@@ -354,16 +395,88 @@ class Store:
             rows = self.conn.execute("SELECT * FROM lexicon ORDER BY id DESC").fetchall()
         return [dict(r) for r in rows]
 
-    def lexicon_add(self, term: str, kind: str = "slang", note: str = "") -> None:
+    def lexicon_add(
+        self, term: str, kind: str = "slang", note: str = "", source: str = ""
+    ) -> None:
         with self._lock:
             self.conn.execute(
                 """
-                INSERT INTO lexicon(term, kind, note, ts) VALUES(?,?,?,?)
-                ON CONFLICT(term) DO UPDATE SET kind=excluded.kind, note=excluded.note, ts=excluded.ts
+                INSERT INTO lexicon(term, kind, note, source, ts) VALUES(?,?,?,?,?)
+                ON CONFLICT(term) DO UPDATE SET kind=excluded.kind, note=excluded.note,
+                    source=excluded.source, ts=excluded.ts
                 """,
-                (term.strip()[:80], kind, note[:500], int(time.time() * 1000)),
+                (term.strip()[:80], kind, note[:500], source[:12], int(time.time() * 1000)),
             )
             self.conn.commit()
+
+    def lexicon_set_note(self, term: str, note: str, source: str = "") -> int:
+        """改一条黑话的含义（不动类型）。"""
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE lexicon SET note = ?, source = ?, ts = ? WHERE term = ?",
+                (note[:500], source[:12], int(time.time() * 1000), term.strip()[:80]),
+            )
+            self.conn.commit()
+        return cur.rowcount
+
+    # ---------- 解释记录 ----------
+
+    def lex_history_add(self, term: str, note: str, source: str, evidence: str = "") -> int:
+        with self._lock:
+            cur = self.conn.execute(
+                "INSERT INTO lexicon_history(term, note, source, evidence, picked, ts) VALUES(?,?,?,?,0,?)",
+                (term, note, source, (evidence or "")[:2000], int(time.time())),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def lex_history_list(self, q: str = "", limit: int = 300) -> list[dict[str, Any]]:
+        q = (q or "").strip()
+        if q:
+            like = f"%{q}%"
+            rows = self.conn.execute(
+                "SELECT * FROM lexicon_history WHERE term LIKE ? OR note LIKE ? ORDER BY id DESC LIMIT ?",
+                (like, like, limit),
+            ).fetchall()
+        else:
+            rows = self.conn.execute(
+                "SELECT * FROM lexicon_history ORDER BY id DESC LIMIT ?", (limit,)
+            ).fetchall()
+        return [dict(r) for r in rows]
+
+    def lex_history_update(self, hid: int, note: str) -> int:
+        with self._lock:
+            cur = self.conn.execute(
+                "UPDATE lexicon_history SET note = ?, ts = ? WHERE id = ?",
+                (note, int(time.time()), hid),
+            )
+            self.conn.commit()
+            return cur.rowcount
+
+    def lex_history_get(self, hid: int) -> dict[str, Any] | None:
+        row = self.conn.execute("SELECT * FROM lexicon_history WHERE id = ?", (hid,)).fetchone()
+        return dict(row) if row else None
+
+    def lex_history_pick(self, hid: int) -> dict[str, Any] | None:
+        """把这条认定为该词的默认解释：词库里写它，记录里只留这一条 picked。"""
+        row = self.lex_history_get(hid)
+        if not row:
+            return None
+        term = row["term"]
+        with self._lock:
+            self.conn.execute("UPDATE lexicon_history SET picked = 0 WHERE term = ?", (term,))
+            self.conn.execute("UPDATE lexicon_history SET picked = 1 WHERE id = ?", (hid,))
+            self.conn.execute(
+                "UPDATE lexicon SET note = ?, source = ?, ts = ? WHERE term = ?",
+                (row["note"], "人工", int(time.time()), term),
+            )
+            self.conn.execute(
+                "INSERT INTO lexicon(term, kind, note, source, ts) "
+                "SELECT ?, 'slang', ?, '人工', ? WHERE NOT EXISTS (SELECT 1 FROM lexicon WHERE term = ?)",
+                (term, row["note"], int(time.time()), term),
+            )
+            self.conn.commit()
+        return row
 
     def lexicon_remove(self, term: str) -> int:
         with self._lock:
@@ -415,6 +528,166 @@ class Store:
             )
             self.conn.commit()
         return cur.rowcount > 0
+
+    # ---------- 表情包 ----------
+    def sticker_add(
+        self,
+        digest: str,
+        url: str = "",
+        file: str = "",
+        summary: str = "",
+        sender_id: str = "",
+        sender_name: str = "",
+        conv_id: str = "",
+        ts: int = 0,
+        source: str = "collected",
+        remark: str = "",
+    ) -> int:
+        """收一张表情；已经有了就把次数加一（用来排「最常用」）。"""
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute("SELECT id FROM stickers WHERE hash = ?", (digest,))
+            row = cur.fetchone()
+            if row:
+                cur.execute(
+                    "UPDATE stickers SET uses = uses + 1,"
+                    " file = CASE WHEN file = '' THEN ? ELSE file END,"
+                    " url = CASE WHEN url = '' THEN ? ELSE url END"
+                    " WHERE id = ?",
+                    (file, url, row["id"]),
+                )
+                self.conn.commit()
+                return int(row["id"])
+            cur.execute(
+                "INSERT INTO stickers (hash, url, file, summary, sender_id, sender_name,"
+                " conv_id, uses, ts, source, remark)"
+                " VALUES (?,?,?,?,?,?,?,1,?,?,?)",
+                (digest, url, file, summary, sender_id, sender_name, conv_id, ts, source, remark),
+            )
+            self.conn.commit()
+            return int(cur.lastrowid or 0)
+
+    def sticker_list(
+        self, limit: int = 200, offset: int = 0, source: str = ""
+    ) -> list[dict[str, Any]]:
+        sql = "SELECT * FROM stickers"
+        args: list[Any] = []
+        if source:
+            sql += " WHERE source = ?"
+            args.append(source)
+        sql += " ORDER BY uses DESC, id DESC LIMIT ? OFFSET ?"
+        args.extend([int(limit), int(offset)])
+        with self._lock:
+            cur = self.conn.execute(sql, tuple(args))
+            return [dict(r) for r in cur.fetchall()]
+
+    def sticker_count(self, source: str = "") -> int:
+        with self._lock:
+            if source:
+                cur = self.conn.execute(
+                    "SELECT COUNT(*) AS n FROM stickers WHERE source = ?", (source,)
+                )
+            else:
+                cur = self.conn.execute("SELECT COUNT(*) AS n FROM stickers")
+            return int(cur.fetchone()["n"])
+
+    def sticker_get(self, sticker_id: int) -> dict[str, Any] | None:
+        with self._lock:
+            cur = self.conn.execute("SELECT * FROM stickers WHERE id = ?", (int(sticker_id),))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def sticker_find(self, name: str) -> dict[str, Any] | None:
+        """按备注 / 摘要 / 来源人找一张，给「发个 xxx 表情」用。"""
+        text = (name or "").strip()
+        if not text:
+            return None
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT * FROM stickers WHERE file != '' AND"
+                " (remark LIKE ? OR summary LIKE ? OR sender_name LIKE ?)"
+                " ORDER BY uses DESC, id DESC LIMIT 1",
+                (f"%{text}%", f"%{text}%", f"%{text}%"),
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def sticker_recent(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT * FROM stickers ORDER BY uses DESC, id DESC LIMIT ?", (int(limit),)
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def sticker_random(self, exclude_ids: list[int] | None = None) -> dict[str, Any] | None:
+        sql = "SELECT * FROM stickers WHERE file != ''"
+        args: list[Any] = []
+        if exclude_ids:
+            sql += " AND id NOT IN (" + ",".join("?" * len(exclude_ids)) + ")"
+            args.extend(int(i) for i in exclude_ids)
+        sql += " ORDER BY RANDOM() LIMIT 1"
+        with self._lock:
+            cur = self.conn.execute(sql, tuple(args))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def sticker_mark_used(self, sticker_id: int) -> None:
+        with self._lock:
+            self.conn.execute(
+                "UPDATE stickers SET uses = uses + 1, last_used = ? WHERE id = ?",
+                (int(time.time() * 1000), int(sticker_id)),
+            )
+            self.conn.commit()
+
+    def sticker_set_remark(self, sticker_id: int, remark: str) -> bool:
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                "UPDATE stickers SET remark = ? WHERE id = ?", (remark[:40], int(sticker_id))
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def sticker_sync_favorites(self, items: list[dict[str, Any]], ts: int = 0) -> int:
+        """把 QQ「我的表情」整批写进来（按 url 去重，不动使用次数）。返回新增条数。"""
+        added = 0
+        with self._lock:
+            cur = self.conn.cursor()
+            for it in items:
+                url = str(it.get("url") or "").strip()
+                if not url:
+                    continue
+                digest = "fav:" + hashlib.sha1(url.encode("utf-8")).hexdigest()[:20]
+                cur.execute("SELECT id FROM stickers WHERE hash = ?", (digest,))
+                if cur.fetchone():
+                    continue
+                cur.execute(
+                    "INSERT INTO stickers (hash, url, file, summary, sender_id, sender_name,"
+                    " conv_id, uses, ts, source, remark)"
+                    " VALUES (?,?,?,?,?,?,?,0,?,?,?)",
+                    (
+                        digest,
+                        url,
+                        str(it.get("file") or ""),
+                        str(it.get("summary") or "")[:80],
+                        "",
+                        "",
+                        "",
+                        ts,
+                        "qq_favorite",
+                        str(it.get("remark") or "")[:40],
+                    ),
+                )
+                added += 1
+            self.conn.commit()
+        return added
+
+    def sticker_remove(self, sticker_id: int) -> bool:
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute("DELETE FROM stickers WHERE id = ?", (int(sticker_id),))
+            self.conn.commit()
+            return cur.rowcount > 0
 
     def close(self) -> None:
         with self._lock:

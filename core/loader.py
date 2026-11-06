@@ -32,6 +32,7 @@ class PluginMeta:
     builtin: bool = False
     path: Path = Path(".")
     config: dict[str, Any] = field(default_factory=dict)
+    raw: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -61,23 +62,46 @@ def read_meta(folder: Path) -> PluginMeta:
         description=str(data.get("description") or ""),
         builtin=bool(data.get("builtin", False)),
         path=folder,
+        raw=data,
     )
 
 
 class Loader:
-    def __init__(self, root: Path, make_ctx: Callable[[PluginMeta], Any]):
+    def __init__(
+        self,
+        root: Path,
+        make_ctx: Callable[[PluginMeta], Any],
+        extra_roots: list[Path] | None = None,
+    ):
         self.root = Path(root)
+        # 外部插件目录：插件也可以归它自己的项目管，不必搬进 status 的 plugins/
+        self.extra_roots = [Path(p) for p in (extra_roots or [])]
         self._make_ctx = make_ctx
         self.metas: dict[str, PluginMeta] = {}
         self._modules: dict[str, Any] = {}
         self._ctxs: dict[str, Any] = {}
         self.status: dict[str, str] = {}
 
+    def module(self, pid: str):
+        """这个插件加载出来的 Python 模块（没启就是 None）。"""
+        return self._modules.get(pid)
+
+    def context(self, pid: str):
+        """这个插件的 ctx（没启就是 None）。"""
+        return self._ctxs.get(pid)
+
     def scan(self) -> list[PluginMeta]:
         self.metas.clear()
-        if not self.root.exists():
+        folders: list[Path] = []
+        for base in [self.root, *self.extra_roots]:
+            if not base.exists():
+                if base != self.root:
+                    log_.warning("外部插件目录不存在：%s", base)
+                continue
+            folders.extend(sorted(p for p in base.iterdir() if p.is_dir()))
+        if not folders:
             return []
-        for folder in sorted(p for p in self.root.iterdir() if p.is_dir()):
+        for folder in folders:
             try:
                 meta = read_meta(folder)
             except Exception as exc:
@@ -147,6 +171,28 @@ class Loader:
             ctx.bus.off_owner(pid)
         sys.modules.pop(f"qqbridge_plugin_{pid}", None)
         self.status[pid] = STATUS_DISABLED
+
+    async def reload(self, pid: str) -> None:
+        """重载：还在跑就先拆掉，再按当前代码装回来。"""
+        was_enabled = self.status.get(pid) == STATUS_ENABLED
+        if was_enabled:
+            await self.disable(pid)
+        # 模块缓存里那份也要丢掉，否则改过的代码不会生效
+        sys.modules.pop(f"qqbridge_plugin_{pid}", None)
+        await self.enable(pid)
+
+    async def reload_all(self) -> dict[str, list[str] | dict[str, str]]:
+        done: list[str] = []
+        failed: dict[str, str] = {}
+        for pid in list(self.metas):
+            if self.status.get(pid) != STATUS_ENABLED:
+                continue
+            try:
+                await self.reload(pid)
+                done.append(pid)
+            except Exception as exc:
+                failed[pid] = str(exc)[:200]
+        return {"reloaded": done, "failed": failed}
 
     async def enable_all(self) -> None:
         for pid, meta in self.metas.items():

@@ -21,6 +21,9 @@ import os
 from pathlib import Path
 from typing import Any
 
+# 0x08000000：不给子进程分配控制台窗口（Windows）
+CREATE_NO_WINDOW = 0x08000000
+
 from . import log
 
 log_ = log.get("mcp")
@@ -65,6 +68,7 @@ class McpServer:
         env.update({k: str(v) for k, v in self.env_extra.items()})
         env.setdefault("PYTHONIOENCODING", "utf-8")
 
+        # Windows：不传 CREATE_NO_WINDOW 的话，控制台子程序会各自弹一个黑窗口
         try:
             self._proc = await asyncio.create_subprocess_exec(
                 self.command,
@@ -74,6 +78,7 @@ class McpServer:
                 stdin=asyncio.subprocess.PIPE,
                 stdout=asyncio.subprocess.PIPE,
                 stderr=asyncio.subprocess.PIPE,
+                creationflags=CREATE_NO_WINDOW,
             )
         except OSError as exc:
             raise McpError(f"{self.name}: 起不来（{exc}）") from exc

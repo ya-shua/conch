@@ -21,7 +21,7 @@ from . import log
 
 log_ = log.get("update")
 
-REPO = "ya-shua/conch"
+REPO = "ya-shua/conch-workbench"
 RELEASES_API = f"https://api.github.com/repos/{REPO}/releases/latest"
 CODE_URL = f"https://github.com/{REPO}"
 
@@ -197,6 +197,41 @@ async def apply_update() -> dict:
             return {"ok": False, "error": f"更新失败：{exc}"}
 
     return {"ok": False, "error": "没查到可用版本，稍后再试"}
+
+
+def _restart_script(root: Path) -> str:
+    """等 1.5 秒把自己杀掉，再用 start_conch.vbs 拉起来（无窗口）。"""
+    vbs = root / "start_conch.vbs"
+    return (
+        "Start-Sleep -Milliseconds 1500; "
+        "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
+        "Where-Object { $_.CommandLine -match 'qqbridge.main' } | "
+        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; "
+        "Start-Sleep -Milliseconds 900; "
+        + (f"Start-Process wscript.exe -ArgumentList '\"{vbs}\"';" if vbs.exists() else "")
+    )
+
+
+async def restart_self() -> dict:
+    """后台重启：先回响应，再杀进程换新代码。"""
+    root = project_root()
+    script = _restart_script(root)
+    flags = 0
+    if hasattr(subprocess, "CREATE_NO_WINDOW"):
+        flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
+    try:
+        subprocess.Popen(
+            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script],
+            cwd=str(root),
+            creationflags=flags,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+    except Exception as exc:
+        log_.warning("重启没起来：%s", exc)
+        return {"ok": False, "error": f"重启失败：{exc}"}
+    log_.info("正在重启海螺")
+    return {"ok": True, "restarting": True}
 
 
 async def _git_pull(git: str, root: Path) -> dict:

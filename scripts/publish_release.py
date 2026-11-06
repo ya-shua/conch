@@ -30,7 +30,8 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 API = "https://api.github.com"
-REPO = "ya-shua/conch"
+REPO = os.environ.get("GITHUB_REPO", "ya-shua/conch-workbench")
+DESC = "海螺工作台：一个 QQ 上的她，插件化、自带控制台"
 
 
 def token() -> str:
@@ -98,6 +99,46 @@ def section(ver: str) -> str:
     return (body[:cut] if cut != -1 else body).strip()
 
 
+def gate() -> int:
+    """专属门禁：每次上传前把要传的文件全扫一遍隐私字符，有问题直接不发。"""
+    script = ROOT / "scripts" / "privacy_gate.py"
+    proc = subprocess.run(
+        [sys.executable, str(script), "--all"], capture_output=True, text=True, encoding="utf-8"
+    )
+    out = (proc.stdout or "").strip()
+    if out:
+        print(out)
+    if proc.returncode != 0:
+        print("\n门禁没让过：先处理上面的隐私字符再发版。")
+    return proc.returncode
+
+
+def ensure_repo() -> int:
+    """仓库不存在就当场建一个公开的 MIT 项目。"""
+    status, info = call("GET", f"/repos/{REPO}")
+    if status == 200:
+        if info.get("private"):
+            print("仓库是私有的，改成公开 …")
+            call("PATCH", f"/repos/{REPO}", {"private": False})
+        print("仓库已存在:", info.get("html_url"))
+        return 0
+    owner, _, name = REPO.partition("/")
+    status, info = call("POST", "/user/repos", {
+        "name": name,
+        "description": DESC,
+        "private": False,
+        "has_issues": True,
+        "has_wiki": False,
+        "license_template": "mit",
+        "auto_init": False,
+    })
+    if status not in (200, 201):
+        print("建仓库失败:", status, info.get("message"))
+        return 1
+    print("建好仓库:", info.get("html_url"), "（公开）")
+    return 0
+
+
 def main() -> int:
     try:
         sys.stdout.reconfigure(encoding="utf-8", errors="replace")
@@ -106,7 +147,12 @@ def main() -> int:
     ver = version()
     tag = f"v{ver}"
     base = f"/repos/{REPO}"
-    print(f"发版 {tag}")
+    print(f"发版 {tag}  →  {REPO}")
+
+    if gate() != 0:
+        return 1
+    if ensure_repo() != 0:
+        return 1
 
     status, head = call("GET", f"{base}/git/ref/heads/main")
     parent = head["object"]["sha"] if status == 200 else ""
@@ -125,7 +171,7 @@ def main() -> int:
         if status != 201:
             print("blob 失败:", rel, status, blob.get("message"))
             return 1
-        tree_items.append({"path": rel, "mode": "100644", "type": "blob", "sha": blob["sha"]})
+        tree_items.append({"path": rel, "mode": "100644", "type": "blob", "sha": blob["sha"]})  # privacy-ok 文件模式不是号
 
     payload = {"tree": tree_items}
     if base_tree_sha:
@@ -152,8 +198,10 @@ def main() -> int:
         {"tag": tag, "message": f"海螺 {tag}", "object": sha, "type": "commit"},
     )
     if status == 201:
-        call("POST", f"{base}/git/refs", {"ref": f"refs/tags/{tag}", "sha": tagobj["sha"]})
-        print("tag 已打")
+        st, _ = call("POST", f"{base}/git/refs", {"ref": f"refs/tags/{tag}", "sha": tagobj["sha"]})
+        print("tag 已打:", tag, st)
+    elif status == 422:
+        print("tag 已存在，跳过:", tag)
     else:
         print("tag:", status, tagobj.get("message"))
 

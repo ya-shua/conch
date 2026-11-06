@@ -1,0 +1,9 @@
+{
+  "id": "websearch",
+  "name": "联网",
+  "name_en": "WebSearch",
+  "version": "0.1.0",
+  "author": "dady",
+  "description": "遇到不懂的词、梗、事就自己上网查，查过的短词顺手记进词库",
+  "builtin": true
+}

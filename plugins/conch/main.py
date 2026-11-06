@@ -156,8 +156,69 @@ _STATE: dict[str, dict] = {}
 
 def _st(conv: str) -> dict:
     return _STATE.setdefault(
-        conv, {"last_reply": 0.0, "hour": "", "hour_count": 0, "consecutive": 0}
+        conv,
+        {
+            "last_reply": 0.0,
+            "last_active": 0.0,
+            "asleep": False,
+            "hour": "",
+            "hour_count": 0,
+            "consecutive": 0,
+        },
     )
+
+
+def asleep(ctx, conv: str) -> bool:
+    """她是不是睡着了：群里安静超过 sleep_after_sec 就算睡。"""
+    st = ctx.cfg.strategy or {}
+    quiet = int(st.get("sleep_after_sec") or 0)
+    if quiet <= 0:
+        return False
+    state = _st(conv)
+    last = float(state.get("last_active") or 0)
+    if not last:
+        return False
+    return (time.time() - last) > quiet
+
+
+def wake_gap_blocked(ctx, conv: str) -> bool:
+    """两次主动开口之间要隔够 wake_gap_sec。"""
+    st = ctx.cfg.strategy or {}
+    gap = int(st.get("wake_gap_sec") or 0)
+    if gap <= 0:
+        return False
+    state = _st(conv)
+    last = float(state.get("last_reply") or 0)
+    return bool(last) and (time.time() - last) < gap
+
+
+def in_quiet_hours(st: dict) -> bool:
+    """免打扰时段：只回 @，不主动开口。跨零点也能算（23:00–07:30）。"""
+    start = str(st.get("quiet_start") or "").strip()
+    end = str(st.get("quiet_end") or "").strip()
+    if not (start and end):
+        return False
+    try:
+        sh, sm = [int(x) for x in start.split(":")]
+        eh, em = [int(x) for x in end.split(":")]
+    except ValueError:
+        return False
+    now = time.localtime()
+    cur = now.tm_hour * 60 + now.tm_min
+    a, b = sh * 60 + sm, eh * 60 + em
+    if a == b:
+        return False
+    if a < b:
+        return a <= cur < b
+    return cur >= a or cur < b
+
+
+def too_short(msg: Message, st: dict) -> bool:
+    """群里那种「嗯」「哦」不值得接；@ 了例外。"""
+    limit = int(st.get("min_chars") or 0)
+    if limit <= 0 or msg.kind == "private" or msg.at_me:
+        return False
+    return len(str(msg.text or "").strip()) < limit
 
 
 def should_reply(ctx, msg: Message) -> bool:
@@ -167,6 +228,15 @@ def should_reply(ctx, msg: Message) -> bool:
     trigger = st.get("trigger", "at_only")
     if msg.kind == "private":
         return True
+    if asleep(ctx, msg.conv_id) and not msg.at_me:
+        # 睡着了：群里只在被 @ 时醒，别的一概不理
+        name = str((ctx.cfg.raw or {}).get("bot_name") or "").strip()
+        if not (name and name in msg.text):
+            return False
+    if too_short(msg, st):
+        return False
+    if in_quiet_hours(st) and not msg.at_me:
+        return False
     if trigger == "any":
         return True
     if trigger == "at_or_name":
@@ -183,6 +253,8 @@ def rate_limited(ctx, conv: str) -> bool:
     cooldown = int(st.get("cooldown_sec") or 0)
     if cooldown and now - state["last_reply"] < cooldown:
         return True
+    if wake_gap_blocked(ctx, conv):
+        return True
 
     hour = time.strftime("%Y%m%d%H", time.localtime(now))
     if state["hour"] != hour:
@@ -195,6 +267,8 @@ def rate_limited(ctx, conv: str) -> bool:
 def mark_replied(conv: str) -> None:
     state = _st(conv)
     state["last_reply"] = time.time()
+    state["last_active"] = time.time()
+    state["asleep"] = False
     state["hour_count"] += 1
     state["consecutive"] += 1
 
@@ -223,7 +297,10 @@ async def talk(ctx, messages: list[dict], scope: str) -> tuple[str, dict[str, in
     """有工具就走工具循环，没有就一句话返回。"""
     backend = ctx.services["backend"]
     pool = ctx.services.get("mcppool")
-    tools = pool.tools_for(scope) if pool is not None else []
+    toolbox = ctx.services.get("tools")
+    tools = list(pool.tools_for(scope)) if pool is not None else []
+    if toolbox is not None:
+        tools.extend(toolbox.specs())
     if not tools:
         return await backend.chat(messages)
 
@@ -255,7 +332,15 @@ async def talk(ctx, messages: list[dict], scope: str) -> tuple[str, dict[str, in
             except json.JSONDecodeError:
                 args = {}
             ctx.log.info("调工具 %s(%s)", name, str(args)[:120])
-            result = await pool.call(name, args if isinstance(args, dict) else {})
+            payload = args if isinstance(args, dict) else {}
+            result = None
+            if toolbox is not None:
+                result = await toolbox.call(name, payload)
+            if result is None:
+                if pool is None:
+                    result = f"没有这个工具：{name}"
+                else:
+                    result = await pool.call(name, payload)
             msgs.append(
                 {"role": "tool", "tool_call_id": str(call.get("id") or ""), "content": result}
             )
@@ -467,6 +552,31 @@ async def on_message(ctx, merger: Merger, msg: Message) -> None:
     if not allowed(ctx.cfg, msg.conv_id, msg.sender_id):
         ctx.log.debug("不在白名单，忽略：%s / %s", msg.conv_id, msg.sender_id)
         return None
+    # 有人在说话：刷新「最近活跃」，睡着的话就算被叫醒
+    _state = _st(msg.conv_id)
+    was_asleep = bool(_state.get("asleep"))
+    _state["last_active"] = time.time()
+    _state["asleep"] = False
+    if was_asleep:
+        ctx.log.info("被消息叫醒：%s", msg.conv_id)
+
+    # 纯图 / 纯表情也要让别的插件看见（收藏表情用），但不能进对话
+    try:
+        await ctx.bus.emit(
+            "message.observed",
+            {
+                "conv_id": msg.conv_id,
+                "kind": msg.kind,
+                "sender_id": msg.sender_id,
+                "sender_name": msg.sender_name,
+                "text": msg.text,
+                "ts": msg.ts,
+                "segments": [{"type": seg.type, "data": dict(seg.data)} for seg in msg.segments],
+            },
+        )
+    except Exception as exc:
+        ctx.log.debug("message.observed 出错：%s", exc)
+
     if not msg.text:
         return None  # M1 只处理文本
 
@@ -482,21 +592,6 @@ async def on_message(ctx, merger: Merger, msg: Message) -> None:
         )
     except Exception as exc:
         ctx.log.warning("写聊天记录失败：%s", exc)
-
-    # 让别的插件观察这条消息（心情、记忆之类）
-    try:
-        await ctx.bus.emit(
-            "message.observed",
-            {
-                "conv_id": msg.conv_id,
-                "kind": msg.kind,
-                "sender_id": msg.sender_id,
-                "sender_name": msg.sender_name,
-                "text": msg.text,
-            },
-        )
-    except Exception as exc:
-        ctx.log.debug("message.observed 出错：%s", exc)
 
     if not should_reply(ctx, msg):
         return None

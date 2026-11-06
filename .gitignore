@@ -17,3 +17,6 @@ tide_state.json
 .DS_Store
 # 本机启动清单（含路径和密码）
 launchers.json
+# 只在本机用的脚本（里面写死了我的路径）
+scripts/window_guard.py
+scripts/fix_integrity.ps1

@@ -61,6 +61,8 @@ class ModelConfig:
     timeout_s: int = 60
     # 自定义 / 中转时自己起的名字，只用来显示
     label: str = ""
+    # 多把 Key：按顺序用，前面那把欠费/失效就换下一把（见 backend.py）
+    keys: list[dict] = field(default_factory=list)
 
 
 @dataclass
@@ -76,6 +78,11 @@ DEFAULT_STRATEGY: dict[str, Any] = {
     "max_per_hour": 30,
     "max_consecutive": 3,
     "confirm_uncertain": False,  # 命中关键词时先挂起等主人点头
+    "wake_gap_sec": 0,      # 她主动开口的最短间隔，0 = 不限
+    "sleep_after_sec": 0,   # 群里安静多久算睡着，0 = 不睡
+    "quiet_start": "",      # 免打扰开始，HH:MM；空 = 不设
+    "quiet_end": "",        # 免打扰结束，HH:MM
+    "min_chars": 0,         # 群里短于这个字数的消息不接（@ 除外）
 }
 
 # 自由发言：没人喊她，她自己决定要不要开口。
@@ -92,6 +99,7 @@ class Config:
     data_dir: str = "data"
     roles_dir: str = "roles"
     plugins_dir: str = "plugins"
+    plugin_paths: list[str] = field(default_factory=list)
     strategy: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
@@ -108,6 +116,29 @@ def _loads(text: str, path: Path) -> dict[str, Any]:
     if not isinstance(data, dict):
         raise ConfigError(f"{path} 顶层必须是对象")
     return data
+
+
+def _parse_keys(model_raw: dict) -> list[dict]:
+    """多把 Key：`[{"key": "...", "label": "主号"}]`，保留摆放顺序。
+
+    老配置只有 `api_key` 一把，也当成「只有一条」的列表，
+    这样别处的代码不用分两种情况。
+    """
+    out: list[dict] = []
+    raw = model_raw.get("keys")
+    if isinstance(raw, list):
+        for item in raw:
+            if isinstance(item, str):
+                if item.strip():
+                    out.append({"key": item.strip(), "label": ""})
+            elif isinstance(item, dict):
+                key = str(item.get("key") or "").strip()
+                if key:
+                    out.append({"key": key, "label": str(item.get("label") or "").strip()[:40]})
+    single = str(model_raw.get("api_key") or os.environ.get("QQBRIDGE_API_KEY", "") or "").strip()
+    if not out and single:
+        out.append({"key": single, "label": "默认"})
+    return out
 
 
 def load_config(path: str | Path) -> Config:
@@ -154,6 +185,7 @@ def load_config(path: str | Path) -> Config:
         api_key=str(model_raw.get("api_key") or os.environ.get("QQBRIDGE_API_KEY", "")),
         model=str(model_raw.get("model") or "deepseek-chat"),
         timeout_s=int(model_raw.get("timeout_s") or 60),
+        keys=_parse_keys(model_raw),
     )
 
     cfg.panel = PanelConfig(
@@ -167,12 +199,17 @@ def load_config(path: str | Path) -> Config:
     cfg.data_dir = str(raw.get("data_dir") or "data")
     cfg.roles_dir = str(raw.get("roles_dir") or "roles")
     cfg.plugins_dir = str(raw.get("plugins_dir") or "plugins")
+    cfg.plugin_paths = [str(x) for x in (raw.get("plugin_paths") or []) if str(x).strip()]
 
     if cfg.merge_window_ms < 0:
         raise ConfigError("merge_window_ms 不能为负")
 
     # 相对路径一律相对于配置文件所在目录，避免从别处启动时找不到
     base = path.parent
+    cfg.plugin_paths = [
+        str(p if p.is_absolute() else (base / p).resolve()) for p in map(Path, cfg.plugin_paths)
+    ]
+
     for attr in ("data_dir", "roles_dir", "plugins_dir"):
         value = Path(getattr(cfg, attr))
         if not value.is_absolute():
