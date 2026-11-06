@@ -91,11 +91,12 @@ def tracked() -> list[str]:
 
 def section(ver: str) -> str:
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
-    parts = text.split(f"## v{ver}")
-    if len(parts) < 2:
+    head = f"## v{ver}"
+    at = text.find(head)
+    if at < 0:
         return ""
-    body = parts[1]
-    cut = body.find("\n## v")
+    body = text[at:]
+    cut = body.find("\n## v", len(head))
     return (body[:cut] if cut != -1 else body).strip()
 
 

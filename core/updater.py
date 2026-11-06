@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import asyncio
+import subprocess
+import sys
 import shutil
 from pathlib import Path
 
@@ -199,33 +201,28 @@ async def apply_update() -> dict:
     return {"ok": False, "error": "没查到可用版本，稍后再试"}
 
 
-def _restart_script(root: Path) -> str:
-    """等 1.5 秒把自己杀掉，再用 start_conch.vbs 拉起来（无窗口）。"""
-    vbs = root / "start_conch.vbs"
-    return (
-        "Start-Sleep -Milliseconds 1500; "
-        "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
-        "Where-Object { $_.CommandLine -match 'qqbridge.main' } | "
-        "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; "
-        "Start-Sleep -Milliseconds 900; "
-        + (f"Start-Process wscript.exe -ArgumentList '\"{vbs}\"';" if vbs.exists() else "")
-    )
-
-
 async def restart_self() -> dict:
-    """后台重启：先回响应，再杀进程换新代码。"""
+    """后台重启：调用 scripts/restart_conch.py，它负责杀自己 + 重新拉起。"""
     root = project_root()
-    script = _restart_script(root)
+    script = root / "scripts" / "restart_conch.py"
+    if not script.exists():
+        return {"ok": False, "error": "找不到 scripts/restart_conch.py"}
+
+    py = Path(sys.executable)
+    pyw = py.with_name("pythonw.exe")
+    launcher = pyw if pyw.exists() else py
+
     flags = 0
     if hasattr(subprocess, "CREATE_NO_WINDOW"):
         flags = subprocess.CREATE_NO_WINDOW | subprocess.DETACHED_PROCESS
     try:
         subprocess.Popen(
-            ["powershell", "-NoProfile", "-WindowStyle", "Hidden", "-Command", script],
+            [str(launcher), str(script)],
             cwd=str(root),
             creationflags=flags,
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
+            close_fds=True,
         )
     except Exception as exc:
         log_.warning("重启没起来：%s", exc)
