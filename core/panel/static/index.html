@@ -1446,7 +1446,8 @@ async function loadPlugins() {
     (opts.en ? '<span class="pen">' + esc(opts.en) + "</span>" : "") + " " + opts.pill + "</div>" +
     '<div class="plug-m">' + opts.meta + "</div></div></div>" +
     '<div class="plug-d">' + opts.desc + "</div>" +
-    (opts.secret ? '<div class="plug-secret" title="这个插件页面的密码">密码 ' + esc(opts.secret) + "</div>" : "") +
+    (opts.secret ? '<div class="plug-secret" title="打开这个页面要用的凭据">' + esc(opts.secretLabel || "密码") + " " +
+      esc(opts.secret) + "</div>" : "") +
     '<div class="plug-f"><span class="pid">' + esc(opts.id) + '</span><span class="acts">' +
     opts.acts + "</span></div></div>";
 
@@ -1495,7 +1496,8 @@ async function loadPlugins() {
       en: p.name_en || (launch && launch.en) || p.id,
       pill: runDot || st,
       meta: "v" + esc(p.version) + " · 海螺插件" + (p.author ? " · " + esc(p.author) : "") + port,
-      secret: launch && launch.secret ? launch.secret : "",
+      secret: launch ? launch.secret || launch.token || "" : "",
+      secretLabel: launch && launch.secret ? "密码" : "口令",
       accent: accentOf(p.id),
       desc: esc(p.description || "没有说明"),
       id: p.id,
@@ -1521,7 +1523,8 @@ async function loadPlugins() {
       en: it.en || it.id,
       pill: dot,
       meta: (it.port ? "端口 " + it.port : "无固定端口") + (it.by ? " · 据" + esc(it.by) : ""),
-      secret: it.secret || "",
+      secret: it.secret || it.token || "",
+      secretLabel: it.secret ? "密码" : "口令",
       accent: accentOf(it.id),
       desc: esc(it.note || ""),
       id: it.id,

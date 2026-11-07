@@ -86,6 +86,8 @@ public class PanelWindow
         // 这就是之前「一唤起就变小」的原因。
         if (IsIconic(h)) ShowWindow(h, 9);
         else ShowWindow(h, 5);   // SW_SHOW：不改变最大化/还原状态，只是让它可见
+        // 唤起时如果还是小窗，就铺满 —— 「打开页面」的默认状态是最大化
+        if (-not (IsZoomed(h))) ShowWindow(h, 3);
         BringWindowToTop(h);
         SetForegroundWindow(h);
         if (GetForegroundWindow() != h)
@@ -99,7 +101,9 @@ public class PanelWindow
                 AttachThreadInput(me, fg, false);
             }
         }
-        return GetForegroundWindow() == h;
+        // 抢不到前台（后台会话很常见）不能算失败：窗口已经可见、已经置顶就够了，
+        // 否则会被误判成“没开着”，每点一次就多开一个窗口。
+        return IsWindow(h) && IsWindowVisible(h);
     }
 }
 '@

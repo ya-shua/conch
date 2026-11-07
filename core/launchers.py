@@ -118,6 +118,7 @@ TOKEN_FILES = (
     "state/console-token",
     "state/token",
     "data/token",
+    "data/token.txt",
     "data/console-token",
     "console-token",
     ".token",
@@ -479,7 +480,8 @@ def status(item: dict[str, Any]) -> dict[str, Any]:
             for s in (item.get("secrets") or [])
             if isinstance(s, dict) and s.get("key")
         ],
-        "secret": _secret_value(item) or _discover_token(item) or "",
+        "secret": _secret_value(item) or "",
+        "token": _discover_token(item) or "",
         "running": bool(by_port or by_process),
         "by": "端口" if by_port else ("进程" if by_process else ""),
         "pid": pid or 0,
