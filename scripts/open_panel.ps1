@@ -32,6 +32,8 @@ public class PanelWindow
     [DllImport("user32.dll")] static extern int GetWindowText(IntPtr h, StringBuilder s, int n);
     [DllImport("user32.dll")] static extern bool IsWindowVisible(IntPtr h);
     [DllImport("user32.dll")] static extern bool IsWindow(IntPtr h);
+
+    [DllImport("user32.dll")] static extern bool IsIconic(IntPtr h);
     [DllImport("user32.dll")] static extern uint GetWindowThreadProcessId(IntPtr h, out uint pid);
     [DllImport("user32.dll")] static extern bool SetForegroundWindow(IntPtr h);
     [DllImport("user32.dll")] static extern bool ShowWindow(IntPtr h, int cmd);
@@ -71,10 +73,19 @@ public class PanelWindow
         return found;
     }
 
+    public static bool Maximize(IntPtr h)
+    {
+        if (h == IntPtr.Zero) return false;
+        return ShowWindow(h, 3);   // SW_MAXIMIZE
+    }
+
     public static bool Raise(IntPtr h)
     {
         if (h == IntPtr.Zero) return false;
-        ShowWindow(h, 9);   // SW_RESTORE（最小化的也要能拉出来）
+        // 只有「最小化」时才 SW_RESTORE。对最大化窗口调 SW_RESTORE 会把它打回小窗，
+        // 这就是之前「一唤起就变小」的原因。
+        if (IsIconic(h)) ShowWindow(h, 9);
+        else ShowWindow(h, 5);   // SW_SHOW：不改变最大化/还原状态，只是让它可见
         BringWindowToTop(h);
         SetForegroundWindow(h);
         if (GetForegroundWindow() != h)
@@ -156,7 +167,7 @@ function Get-BrowserExe {
 
 $exe = Get-BrowserExe
 if ($exe) {
-    Start-Process -FilePath $exe -ArgumentList '--new-window', $Url | Out-Null
+    Start-Process -FilePath $exe -ArgumentList '--new-window', '--start-maximized', $Url | Out-Null
 } else {
     Start-Process -FilePath $Url | Out-Null
 }
@@ -165,6 +176,7 @@ for ($i = 0; $i -lt 50; $i++) {
     $h = [PanelWindow]::Find($TitlePattern)
     if ($h -ne [IntPtr]::Zero) {
         Save-Handle $h
+        [PanelWindow]::Maximize($h) | Out-Null   # 新开的一律铺满，别给人看小窗
         if (Try-Raise $h) {
             Write-Host ("新窗口打开并前置（{0:N1}s）" -f $sw.Elapsed.TotalSeconds)
             exit 0

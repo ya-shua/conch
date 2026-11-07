@@ -634,7 +634,7 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
             <div class="kpi"><div class="k">QQ 连接</div><div class="v" id="mConn">—</div><div class="s" id="mConnHint">—</div></div>
             <div class="kpi"><div class="k">近 24 小时花费</div><div class="v" id="mCost">—</div><div class="s">按价目表估算</div></div>
             <div class="kpi"><div class="k">近 24 小时词元</div><div class="v" id="mTok">—</div><div class="s" id="mTokHint">—</div></div>
-            <div class="kpi"><div class="k">插件 / 会话</div><div class="v"><span id="mPlugins">—</span><span style="color:var(--muted-2);font-weight:400;font-size:16px"> / </span><span id="mSessions">—</span></div><div class="s">已启用插件 · 有记录会话</div></div>
+            <div class="kpi"><div class="k">插件 / 会话</div><div class="v"><span id="mPlugins">—</span><span style="color:var(--muted-2);font-weight:400;font-size:16px"> / </span><span id="mSessions">—</span></div><div class="s" id="mPlugHint">已启用插件 · 有记录会话</div></div>
           </div>
 
           <div class="grid g23">
@@ -1335,7 +1335,10 @@ async function loadStatus() {
   $("mCostTop").textContent = fmtMoney(s.today.cost_yuan);
   $("mTok").textContent = fmtTok((s.today.prompt_tokens || 0) + (s.today.completion_tokens || 0));
     $("mTokHint").textContent = "输入 " + fmtTok(s.today.prompt_tokens) + " · 输出 " + fmtTok(s.today.completion_tokens);
-  $("mPlugins").textContent = s.plugins_enabled + " / " + s.plugins;
+  $("mPlugins").textContent = s.plugins_enabled;
+  if ($("mPlugHint")) {
+    $("mPlugHint").textContent = "已启用 " + s.plugins_enabled + " / 共 " + s.plugins + " 个插件 · 有记录会话";
+  }
   const pv = $("navPlugins"); if (pv) { pv.textContent = s.plugins; }
   $("iWs").textContent = s.ws_url; $("iWs").title = s.ws_url;
   $("iModel").textContent = s.model;
