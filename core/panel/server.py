@@ -1050,15 +1050,8 @@ async def api_settings_put(request: web.Request) -> web.Response:
             raise web.HTTPBadRequest(text=json.dumps({"error": str(exc)}, ensure_ascii=False))
         raw["admins"] = [card.to_dict() for card in cards]
         cfg.admins = cards
-        ids: list[str] = []
-        for card in cards:
-            for uid in card.ids:
-                if uid not in ids:
-                    ids.append(uid)
-        cfg.owner_ids = ids
-        cfg.owner_qq = ids[0] if ids else ""
-        # 老字段只留第一个号：它只是「主管理员」，全部号在 admins 里，别存成 "a，b" 被当成一个号
-        raw["owner_qq"] = ids[0] if ids else ""
+        cfg.admins_explicit = True
+        # 卡和「管理员 QQ」是两件事：这里只动卡，不碰 owner_qq（删光卡也得保留管理员身份）
         changed.append("admins")
 
     if "owner_qq" in body and "admins" not in body:
@@ -1067,8 +1060,7 @@ async def api_settings_put(request: web.Request) -> web.Response:
         cfg.owner_ids = ids
         cfg.owner_qq = ids[0] if ids else ""
         raw["owner_qq"] = ids[0] if ids else ""
-        cfg.admins = [Admin(id="a1", name="管理员", ids=list(ids))] if ids else []
-        raw["admins"] = [card.to_dict() for card in cfg.admins]
+        # 只改管理员身份，不碰称呼卡：卡归「称呼卡」页管，别在这儿凭空造一张
         changed.append("owner_qq")
 
     if "merge_window_ms" in body:
@@ -1269,6 +1261,35 @@ async def api_message_convs(request: web.Request) -> web.Response:
     store = request.app["state"]["store"]
     return web.json_response({"ok": True, "convs": store.message_convs()})
 
+
+async def api_sender_names(request: web.Request) -> web.Response:
+    """按 QQ 号从聊天记录里认最近用过的名字：?ids=1,2,3 → {id: 名字}。
+
+    只读 messages 表；没聊过、没名字的号不会出现在结果里。
+    """
+    raw = request.query.get("ids") or ""
+    ids = [x.strip() for x in raw.replace("，", ",").replace(" ", ",").split(",") if x.strip()]
+    ids = [x for x in dict.fromkeys(ids) if x.isdigit()][:20]
+    out: dict[str, str] = {}
+    if not ids:
+        return web.json_response({"ok": True, "names": {}})
+    store = request.app["state"]["store"]
+    marks = ",".join("?" for _ in ids)
+    sql = (
+        "SELECT sender_id, sender_name FROM messages "
+        f"WHERE sender_id IN ({marks}) AND sender_name <> '' "
+        "ORDER BY id DESC LIMIT 400"
+    )
+    try:
+        with store._lock:
+            rows = store.conn.execute(sql, ids).fetchall()
+    except Exception as exc:  # 库还没建好/表还没迁移
+        return web.json_response({"ok": False, "error": str(exc), "names": {}})
+    for row in rows:
+        sid = str(row["sender_id"])
+        if sid not in out:
+            out[sid] = str(row["sender_name"])
+    return web.json_response({"ok": True, "names": out})
 
 async def api_messages(request: web.Request) -> web.Response:
     store = request.app["state"]["store"]
@@ -1993,6 +2014,7 @@ def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Applica
     app.router.add_put("/api/roles/{name}", api_role_put)
     app.router.add_get("/api/logs", api_logs)
     app.router.add_get("/api/messages", api_messages)
+    app.router.add_get("/api/sender-names", api_sender_names)
     app.router.add_get("/api/messages/convs", api_message_convs)
     app.router.add_post("/api/messages/clear", api_messages_clear)
     app.router.add_post("/api/plugins/{pid}/remove", api_plugin_remove)

@@ -80,7 +80,7 @@ def test_owner_stays_admin_even_when_plain_member(plugin):
     """爸在群里可能只是普通群友 —— 照样叫「管理员」，跟职位无关。"""
     m = make(plugin, OWNER, "管理员")
     asyncio.run(plugin.ensure_member_role(ctx_with(FakeClient({OWNER: "member"})), m))
-    assert plugin.render_batch([m], OWNER) == "[群123456] 管理员: 在吗"
+    assert plugin.render_batch([m], OWNER) == "[群123456] 管理员 #1234567890: 在吗"
 
 
 def test_role_is_cached_not_requeried(plugin):

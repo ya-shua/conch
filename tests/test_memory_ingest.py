@@ -78,7 +78,7 @@ def test_group_admin_is_just_admin(plugin):
     m = msg(plugin, "group:123456", OWNER, "管理员", "别理她")
     asyncio.run(plugin.remember_into_ring(make_ctx(plugin, pool), m))
     payload = pool.calls[0][2]
-    assert payload["content"] == "[群123456] 管理员：别理她"
+    assert payload["content"] == "[群123456] 管理员 #1234567890：别理她"
     assert payload["speaker"] == "管理员"
 
 

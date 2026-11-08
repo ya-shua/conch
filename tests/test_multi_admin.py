@@ -110,10 +110,10 @@ def test_one_person_two_ids_same_name(plugin):
     assert lines[1] == f"[群123456] 管理员A #{B}: 在吗"
 
 
-def test_legacy_single_admin_still_compact(plugin):
-    """老配置（只有号码、没建卡）：还是「管理员」，不带号码。"""
+def test_legacy_single_admin_also_carries_number(plugin):
+    """老配置（只有号码、没建卡）：也叫「管理员」，一样带号码。"""
     m = gmsg(plugin, A, "管理员")
-    assert plugin.render_batch([m], [A]) == "[群123456] 管理员: 在吗"
+    assert plugin.render_batch([m], [A]) == f"[群123456] 管理员 #{A}: 在吗"
 
 
 def test_group_admin_is_not_admin(plugin):
@@ -140,7 +140,7 @@ def test_both_admins_can_command_in_private(plugin):
 def test_private_call_hint(plugin):
     ctx = ctx_of(Client(), TWO_PEOPLE)
     line = plugin.call_hint(ctx, pmsg(plugin, A, "管理员"))
-    assert line == "\n\n【叫法】管理员A 希望你叫他「老爹」。"
+    assert line == "\n\n【叫法】管理员A 希望你叫他「老爹」；不想这么叫也没关系。"
     # B 没配称呼 → 一个字都不加
     assert plugin.call_hint(ctx, pmsg(plugin, B, "我")) == ""
 
@@ -148,12 +148,12 @@ def test_private_call_hint(plugin):
 def test_group_call_hint_and_by_group_override(plugin):
     ctx = ctx_of(Client(), TWO_PEOPLE)
     line = plugin.call_hint(ctx, gmsg(plugin, A, "管理员"))
-    assert line == "\n\n【叫法】管理员A 希望你叫他「老大」。"
+    assert line == "\n\n【叫法】管理员A 希望你叫他「老大」；不想这么叫也没关系。"
 
     cards = [{"name": "管理员A", "ids": [A], "group": "老大",
               "by_group": {"123456": "老翰"}}]
     ctx2 = ctx_of(Client(), cards)
-    assert plugin.call_hint(ctx2, gmsg(plugin, A, "管理员")) == "\n\n【叫法】管理员A 希望你叫他「老翰」。"
+    assert plugin.call_hint(ctx2, gmsg(plugin, A, "管理员")) == "\n\n【叫法】管理员A 希望你叫他「老翰」；不想这么叫也没关系。"
 
 
 def test_call_hint_never_for_strangers(plugin):
@@ -165,3 +165,11 @@ def test_owner_list_parsing(plugin):
     assert plugin._owner_ids("1234567890，9876543210") == [A, B]
     assert plugin._owner_ids("1234567890,9876543210,1234567890") == [A, B]
     assert plugin._owner_ids("") == []
+
+def test_multiple_calls_are_listed(plugin):
+    """一个字段填多个称呼：她随便挑一个叫，也可以不叫。"""
+    cards = [{"name": "管理员A", "ids": [A], "group": "老大，阿大、大老板"}]
+    ctx = ctx_of(Client(), cards)
+    line = plugin.call_hint(ctx, gmsg(plugin, A, "管理员"))
+    assert "「老大」" in line and "「阿大」" in line and "「大老板」" in line
+    assert "不想这么叫也没关系" in line

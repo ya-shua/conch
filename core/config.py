@@ -110,6 +110,8 @@ class Config:
     owner_ids: list[str] = field(default_factory=list)
     # 称呼卡：一卡一人（可挂多个号），带各场景想让她怎么叫
     admins: list[Admin] = field(default_factory=list)
+    # config.json 里有没有显式写过 admins：写过（哪怕是 []）就不再拿 owner_qq 兜底造卡
+    admins_explicit: bool = False
     merge_window_ms: int = 4000
     merge_max_wait_ms: int = 0
     # 一句一条时的停顿：base + 字数*20ms，再拿 max 封顶（面板可调）
@@ -246,7 +248,7 @@ def parse_admins(value: Any) -> list[Admin]:
         out.append(
             Admin(
                 id=str(item.get("id") or f"a{i + 1}").strip() or f"a{i + 1}",
-                name=str(item.get("name") or "管理员").strip() or "管理员",
+                name=str(item.get("name") or "").strip(),
                 ids=ids,
                 private_call=str(call.get("private") or "").strip(),
                 group_call=str(call.get("group") or "").strip(),
@@ -315,6 +317,7 @@ def load_config(path: str | Path) -> Config:
     legacy_ids = owner_ids_of(raw.get("owner_qq"))
     cfg.owner_qq = legacy_ids[0] if legacy_ids else ""
     cfg.admins = parse_admins(raw.get("admins"))
+    cfg.admins_explicit = "admins" in raw
     if cfg.admins:
         ids: list[str] = []
         for card in cfg.admins:
@@ -322,7 +325,7 @@ def load_config(path: str | Path) -> Config:
                 if uid not in ids:
                     ids.append(uid)
         # 老的 owner_qq 不在任何卡里、又没被删掉：单独补一张卡，别让它凭空失去管理员身份
-        extra = [uid for uid in legacy_ids if uid not in ids]
+        extra = [] if cfg.admins_explicit else [uid for uid in legacy_ids if uid not in ids]
         if extra:
             cfg.admins.insert(0, Admin(id="a0", name="管理员", ids=extra))
             ids = extra + ids
@@ -331,7 +334,11 @@ def load_config(path: str | Path) -> Config:
     else:
         cfg.owner_ids = legacy_ids
         cfg.owner_qq = legacy_ids[0] if legacy_ids else ""
-        cfg.admins = [Admin(id="a1", name="管理员", ids=list(legacy_ids))] if legacy_ids else []
+        # admins 在配置里显式写成 []：就是真的不要卡，别再从 owner_qq 造一张
+        if cfg.admins_explicit:
+            cfg.admins = []
+        else:
+            cfg.admins = [Admin(id="a1", name="管理员", ids=list(legacy_ids))] if legacy_ids else []
     cfg.merge_window_ms = int(raw.get("merge_window_ms") or 4000)
     cfg.merge_max_wait_ms = int(raw.get("merge_max_wait_ms") or 0)
     cfg.reply_gap_base_ms = max(0, int(raw.get("reply_gap_base_ms") if raw.get("reply_gap_base_ms") is not None else 700))

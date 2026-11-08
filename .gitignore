@@ -23,3 +23,5 @@ scripts/fix_integrity.ps1
 
 tests/.conch_plugin_dir
 scripts/privacy_words.local.txt
+
+.test_tmp/

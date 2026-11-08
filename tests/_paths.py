@@ -1,6 +1,6 @@
 """测试要加载的插件入口在哪。
 
-海螺插件 2026-11-08 挪出了仓库，所以不按文件夹名找，而是扫 metadata.json 里的 id。
+说话插件 2026-11-09 起回到仓库 `plugins/conch/`，优先用它；不在时再按 metadata 里的 id 找。
 找的地方：
 1. 仓库里内置的 `plugins/conch/main.py`（老位置）
 2. 环境变量 `CONCH_PLUGIN_DIR`

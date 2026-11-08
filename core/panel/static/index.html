@@ -22,7 +22,7 @@
 :root{
   --bg:#f6f6f8; --surface:#fff; --surface-2:#f8f8fa; --surface-3:#eeeef2;
   --border:#e5e5ea; --border-2:#efeff3; --border-3:#d9d9e0;
-  --text:#16161a; --text-2:#55555f; --muted:#8b8b96; --muted-2:#a7a7b2;
+  --text:#16161a; --text-2:#4a4a54; --muted:#77777f; --muted-2:#8f8f9a;
   --acc:#5b5bd6; --acc-h:#4a4ac4; --acc-bg:#eeeefc; --acc-bd:#cdcdf2; --acc-fg:#4545bf;
   --ok:#0f7b4f; --ok-bg:#e8f5ee; --warn:#a15c07; --warn-bg:#fdf4e5; --warn-bd:#eed9b4;
   --bad:#b8342b; --bad-bg:#fbecea; --bad-bd:#efc8c4;
@@ -33,7 +33,7 @@
 [data-theme="dark"]{
   --bg:#0e0e11; --surface:#16161a; --surface-2:#1b1b20; --surface-3:#232329;
   --border:#292930; --border-2:#222228; --border-3:#3a3a44;
-  --text:#eaeaef; --text-2:#a6a6b2; --muted:#73737f; --muted-2:#5c5c67;
+  --text:#eaeaef; --text-2:#b4b4c0; --muted:#8d8d9a; --muted-2:#747480;
   --acc:#8b8bf0; --acc-h:#9d9df7; --acc-bg:#22223a; --acc-bd:#3a3a63; --acc-fg:#b4b4f8;
   --ok:#4ade80; --ok-bg:#0f2418; --warn:#f0b445; --warn-bg:#251d0e; --warn-bd:#463617;
   --bad:#f87171; --bad-bg:#261414; --bad-bd:#4a2222;
@@ -134,6 +134,39 @@ code{font-family:Consolas,"SFMono-Regular",monospace;font-size:.92em;color:var(-
 .stcfg .fu{font-size:12px;color:var(--muted)}
 .stcfg .fh{font-size:12px;color:var(--muted);margin:2px 0 10px}
 .stcfg .fbtns{display:flex;gap:8px;margin-top:12px}
+/* 称呼卡：卡片内部网格，保证每张卡的框都对齐 */
+.card{border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px;background:var(--surface-2)}
+.card-h{display:flex;align-items:center;gap:8px;margin-bottom:10px}
+.card-h b{font-size:12.5px;font-weight:650;color:var(--text)}
+.card-h .tagm{font-size:10.5px;color:var(--muted);border:1px solid var(--border);border-radius:999px;padding:1px 7px}
+.card-h .del{margin-left:auto}
+.card-grid{display:grid;grid-template-columns:1.1fr 1.7fr 1fr 1fr;gap:10px 12px}
+.card-grid .cell{display:flex;flex-direction:column;gap:5px;min-width:0}
+.card-grid .cell.wide{grid-column:span 2}
+.card-grid label{font-size:11px;color:var(--muted);font-weight:550}
+.card-grid input{width:100%;box-sizing:border-box}
+.card-note{font-size:12.5px;color:var(--text-2);line-height:1.85;margin-top:2px}
+.byg-rows{display:flex;flex-direction:column;gap:6px;margin-bottom:8px}
+.byg-row{display:flex;align-items:center;gap:8px}
+.byg-row input[data-g]{width:150px;flex:none}
+.byg-row input[data-c]{flex:1;min-width:0}
+.byg-row .arrow{color:var(--muted);font-size:12px}
+.byg-row button{flex:none}
+.rules{border:1px solid var(--line,rgba(255,255,255,.08));border-radius:10px;padding:12px 14px;margin-bottom:14px}
+.rules b{color:var(--fg,#e8e8ea)}
+.rules ul{margin:6px 0 0;padding-left:18px}
+.rules li{margin:6px 0}
+.rules li b{color:var(--text);font-weight:650}
+.cards-tip{font-size:12.5px;color:var(--text-2);line-height:1.75;margin:0 0 12px;padding:9px 12px;border-left:3px solid var(--acc-bd);background:var(--acc-bg);border-radius:0 8px 8px 0}
+.cards-tip b{color:var(--acc-fg);font-weight:650}
+.rules .ex{color:var(--muted);font-size:11.5px}
+@media (max-width:560px){.byg-row input[data-g]{width:110px}}
+.cards-err{margin:10px 0;padding:8px 10px;border-radius:8px;font-size:12px;
+  background:color-mix(in srgb,#b4232a 16%,var(--surface));border:1px solid #b4232a66;color:#ffb4b4}
+.cards-err[hidden]{display:none}
+#saveCardsBtn{position:fixed;right:24px;bottom:24px;z-index:210;box-shadow:0 10px 28px rgba(0,0,0,.45)}
+@media (max-width:900px){.card-grid{grid-template-columns:1fr 1fr}.card-grid .cell.wide{grid-column:span 2}}
+@media (max-width:560px){.card-grid{grid-template-columns:1fr}.card-grid .cell.wide{grid-column:span 1}}
 #updBar{position:fixed;left:16px;bottom:16px;z-index:260;display:flex;align-items:center;gap:10px;
   padding:9px 12px 9px 14px;max-width:min(460px,calc(100vw - 32px));cursor:pointer;
   border-radius:12px;background:color-mix(in srgb,var(--acc) 11%,var(--surface));
@@ -606,10 +639,10 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
     <button class="nav" data-view="plugins"><i>▦</i>插件</button>
 
     <div class="grp">聊天行为</div>
-    <button class="nav" data-view="persona"><i>◉</i>人格与角色</button>
+    <button class="nav" data-view="persona"><i>◉</i>性格设置</button>
         <button class="nav" data-view="cards"><i>▣</i>称呼卡</button>
     <button class="nav" data-view="strategy"><i>◈</i>发言策略</button>
-    <button class="nav" data-view="access"><i>⊙</i>访问与安全</button>
+    <button class="nav" data-view="access"><i>⊙</i>白名单设置</button>
     <button class="nav" data-view="lexicon"><i>▤</i>词库</button>
     <button class="nav" data-view="stickers"><i>☺</i>表情包</button>
 
@@ -752,7 +785,7 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
         <div class="page" data-page="persona">
           <section class="sec">
             <div class="sec-head">
-              <h2>人格与角色</h2>
+              <h2>性格设置</h2>
               <span class="note" id="roleActive">—</span>
               <button class="sm" id="newRoleBtn">＋ 新建</button>
             </div>
@@ -925,12 +958,18 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
                 </div>
 
                 <div class="wl-row">
-                  <div class="wl-t"><b>管理员</b><span>谁是自己人、怎么称呼，都搬到了左边的「称呼卡」页</span></div>
+                  <div class="wl-t"><b>管理员 QQ</b><span>私聊始终放行，可以下管理命令；多个用逗号隔开</span></div>
                   <div class="wl-f">
                     <div>
+                      <label for="ownerQQ">管理员 QQ（多个用逗号隔开）</label>
+                      <input type="text" id="ownerQQ" placeholder="示例号，示例号2">
+                    </div>
+                    <div>
                       <label>白名单为空时放行全部</label>
-                      <button class="sw" id="allowAllSwitch" aria-label="白名单为空时放行全部"></button>
-                      <div class="hint" style="margin-top:6px">不建议开。开了等于把账号交给模型。</div>
+                      <div style="display:flex;align-items:center;gap:8px">
+                        <button class="sw" id="allowAllSwitch" aria-label="白名单为空时放行全部"></button>
+                        <span class="hint" id="allowAllHint">不建议开。开了等于把账号交给模型。</span>
+                      </div>
                     </div>
                   </div>
                 </div>
@@ -974,21 +1013,31 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
 
         <div class="page" data-page="cards">
           <section class="sec">
-            <div class="sec-head"><h2>称呼卡</h2><span class="note">一卡一人，可挂多个 QQ 号</span></div>
+            <div class="sec-head"><h2>称呼卡</h2><span class="note">一张卡 = 一个人</span></div>
             <div class="sec-body">
-              <div class="field">
-                <label for="ownerQQ">管理员 QQ（只有一个人、不建卡时用）</label>
-                <input type="text" id="ownerQQ" placeholder="123456，600000">
-                <div class="hint">号码框一次粘一串：逗号、空格、换行都当分隔。建了卡之后这栏可以空着。</div>
+              <div class="card-note rules">
+                <b>怎么用</b>
+                <ul>
+                  <li><b>一张卡 = 一个人。</b>同一张卡里写几个 QQ 号，就当是同一个人，记忆是通的。</li>
+                  <li><b>卡名</b>（填单个称呼）：她记你用的标签。<span class="ex">记忆库、聊天流水里显示的就是这个；改卡名不会改掉以前记下的内容。</span></li>
+                  <li><b>QQ 号</b>：决定“这是谁”。<span class="ex">只认号码，不认昵称；多个号用逗号隔开。</span></li>
+                  <li><b>私聊怎么叫 / 全部群聊怎么叫</b>：她开口时的称呼，<b>可以填多个，逗号隔开</b>。填多个时她随便挑一个叫，也可以一个都不用。<b>留空 = 没要求</b>。</li>
+                  <li><b>按群单独设置</b>：想让某个群换个叫法，就点「+ 添加群」，填群号和那个群的叫法。<span class="ex">只对列出来的群生效，没列的群用「全部群聊怎么叫」。</span></li>
+                  <li>改完点右下角<b>保存</b>；点「删掉」是立刻生效的，不用再保存。</li>
+                </ul>
               </div>
+
+              <div class="cards-tip"><b>称呼只是偏好，不是硬性规定。</b>实际开口会跟着当时的语境和人设变，可能叫得不一样。</div>
               <div id="adminCards"></div>
+              <div class="cards-err" id="cardsErr" hidden></div>
+
               <div style="margin-top:10px">
                 <button class="ghost sm" id="addAdminCard">+ 加一张卡</button>
-                <span class="hint" style="margin-left:8px">一张卡 = 一个人；同一个人的几个号写在一张卡里。</span>
+                <span class="hint" style="margin-left:8px">同一个人的几个号，都写进同一张卡。</span>
               </div>
-              <div class="foot"><button class="primary" id="saveCardsBtn">保存</button></div>
             </div>
           </section>
+          <button class="primary" id="saveCardsBtn">保存</button>
         </div>
 
         <div class="page" data-page="lexicon">
@@ -1209,10 +1258,10 @@ const VIEWS = {
   messages: ["消息", "看过往聊天流水，处理拿不准要不要发的回复。"],
   sessions: ["会话", "每个 QQ 会话的消耗，按花费排序。"],
   plugins: ["插件", "装了什么、开没开。放一个文件夹进 plugins/ 就会出现在这里。"],
-  persona: ["人格与角色", "她是谁、什么语气。改完保存，下一条消息生效。"],
+  persona: ["性格设置", "她是谁、什么语气。改完保存，下一条消息生效。"],
   strategy: ["发言策略", "什么时候说话、说多少。"],
   cards: ["称呼卡", "谁是自己人、怎么称呼；一个人可以挂几个号。"],
-  access: ["访问与安全", "谁能触发她，谁能管她。"],
+  access: ["白名单设置", "谁能触发她、谁能管她；群和私聊的放行都在这里。"],
   lexicon: ["词库", "群里的黑话、触发关键词、你对她的称呼。"],
   usage: ["花费", "谁在花 token，花在哪儿。"],
   models: ["模型接入", "接到哪个模型上、用几把 Key。"],
@@ -2081,6 +2130,7 @@ async function saveStrategy() {
 
 function makeChips(container, values) {
   container.innerHTML = "";
+  if (typeof syncAllowAllSwitch === "function") syncAllowAllSwitch();
   values.forEach((v) => {
     const chip = document.createElement("span");
     chip.className = "chip2";
@@ -2180,18 +2230,16 @@ function _splitIds(v) {
   return String(v || "").split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean);
 }
 
-function _byGroupText(card) {
-  return Object.entries((card.call && card.call.by_group) || {})
-    .map(([g, v]) => g + "：" + v).join("，");
-}
-
-function _parseByGroup(text) {
+// 从卡片的「按群」行里读回 by_group（没填全的行不算）
+function _syncByGroup(holder, card) {
   const out = {};
-  String(text || "").split(/[,，;；\n]+/).forEach((pair) => {
-    const m = pair.split(/[:：]/);
-    if (m.length >= 2 && m[0].trim() && m[1].trim()) out[m[0].trim()] = m[1].trim();
+  holder.querySelectorAll("[data-bygrow]").forEach((row) => {
+    const gid = (row.querySelector("[data-g]").value || "").trim();
+    const want = (row.querySelector("[data-c]").value || "").trim();
+    if (gid && want) out[gid] = want;
   });
-  return out;
+  card.call = card.call || {};
+  card.call.by_group = out;
 }
 
 function renderAdminCards() {
@@ -2199,26 +2247,38 @@ function renderAdminCards() {
   if (!box) return;
   const cards = accessState.admins || [];
   if (!cards.length) {
-    box.innerHTML = '<div class="hint">还没有称呼卡。上面的「管理员 QQ」会自动当成一张叫「管理员」的卡。</div>';
+    box.innerHTML = '<div class="hint">还没有称呼卡。点「+ 加一张卡」建一张；不建也能用，只是记成号码（#号）。</div>';
     return;
   }
   box.innerHTML = cards.map((c, i) => {
     const call = c.call || {};
-    return '<div class="wl-row" data-card="' + i + '" style="border:1px solid var(--line,#2a2a2a);border-radius:10px;padding:10px;margin-bottom:10px">' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
-        '<div style="flex:1;min-width:140px"><label>卡名</label>' +
-          '<input type="text" data-k="name" value="' + esc(c.name || "") + '" placeholder="管理员A"></div>' +
-        '<div style="flex:2;min-width:200px"><label>QQ 号（多个用逗号）</label>' +
-          '<input type="text" data-k="ids" value="' + esc((c.ids || []).join("，")) + '" placeholder="1234567890，9876543210"></div>' +
-        '<div style="flex:1;min-width:120px"><label>私聊怎么叫</label>' +
-          '<input type="text" data-k="private" value="' + esc(call.private || "") + '" placeholder="老爹"></div>' +
-        '<div style="flex:1;min-width:120px"><label>群里怎么叫</label>' +
-          '<input type="text" data-k="group" value="' + esc(call.group || "") + '" placeholder="老大"></div>' +
-      '</div>' +
-      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;align-items:flex-end">' +
-        '<div style="flex:2;min-width:220px"><label>按群单独设置（群号：称呼，逗号隔开）</label>' +
-          '<input type="text" data-k="by_group" value="' + esc(_byGroupText(c)) + '" placeholder="123456：老翰"></div>' +
-        '<div><button class="ghost sm" data-del="' + i + '">删掉这张</button></div>' +
+    const byg = Object.entries(call.by_group || {});
+    const rows = byg.length ? byg : [["", ""]];
+    const bygHtml = rows.map(([g, v]) =>
+      '<div class="byg-row" data-bygrow>' +
+        '<input type="text" data-g value="' + esc(g) + '" placeholder="群号">' +
+        '<span class="arrow">→</span>' +
+        '<input type="text" data-c value="' + esc(v) + '" placeholder="在那个群怎么叫（也可多个，逗号隔开）">' +
+        '<button type="button" class="ghost sm" data-delgroup title="删掉这一行">×</button>' +
+      '</div>').join("");
+    return '<div class="card" data-card="' + i + '">' +
+      '<div class="card-h"><b>第 ' + (i + 1) + ' 张</b>' +
+        '<span class="tagm">' + esc((c.ids || []).length || 0) + ' 个号</span>' +
+        '<button class="ghost sm del" data-del="' + i + '">删掉</button></div>' +
+      '<div class="card-grid">' +
+        '<div class="cell"><label>卡名（怎么记你，填单个称呼）</label>' +
+          '<input type="text" data-k="name" value="' + esc(c.name || "") + '" placeholder="老爸"></div>' +
+        '<div class="cell"><label>QQ 号（这个人的号，支持单人多号共享记忆，逗号隔离）</label>' +
+          '<input type="text" data-k="ids" value="' + esc((c.ids || []).join("，")) + '" placeholder="示例号，示例号2"></div>' +
+        '<div class="cell"><label>私聊怎么叫（多称呼逗号隔开）</label>' +
+          '<input type="text" data-k="private" value="' + esc(call.private || "") + '" placeholder="留空为默认；可多填，逗号隔开"></div>' +
+        '<div class="cell"><label>全部群聊怎么叫（多称呼逗号隔开）</label>' +
+          '<input type="text" data-k="group" value="' + esc(call.group || "") + '" placeholder="留空为默认；可多填，逗号隔开"></div>' +
+        '<div class="cell wide byg">' +
+          '<label>按群单独设置（只有这几个群换个叫法，没列到的群走上面的默认）</label>' +
+          '<div class="byg-rows">' + bygHtml + '</div>' +
+          '<button type="button" class="ghost sm" data-addgroup>+ 添加群</button>' +
+        '</div>' +
       '</div>' +
     '</div>';
   }).join("");
@@ -2235,20 +2295,68 @@ if ($("adminCards")) {
     const k = e.target.dataset.k;
     if (k === "ids") card.ids = _splitIds(e.target.value);
     else if (k === "name") card.name = e.target.value;
-    else if (k === "by_group") card.call.by_group = _parseByGroup(e.target.value);
-    else card.call[k] = e.target.value;
+    else if (k) card.call[k] = e.target.value;
+    if ("g" in e.target.dataset || "c" in e.target.dataset) _syncByGroup(holder, card);
   });
+  const freshGroupRow = () => {
+    const row = document.createElement("div");
+    row.className = "byg-row";
+    row.setAttribute("data-bygrow", "");
+    row.innerHTML = '<input type="text" data-g placeholder="群号">' +
+      '<span class="arrow">→</span>' +
+      '<input type="text" data-c placeholder="在那个群怎么叫（也可多个，逗号隔开）">' +
+      '<button type="button" class="ghost sm" data-delgroup title="删掉这一行">×</button>';
+    return row;
+  };
+
   $("adminCards").addEventListener("click", (e) => {
+    const addGroup = e.target.closest("[data-addgroup]");
+    if (addGroup) {
+      const holder = addGroup.closest("[data-card]");
+      const row = freshGroupRow();
+      holder.querySelector(".byg-rows").appendChild(row);
+      row.querySelector("[data-g]").focus();
+      return;
+    }
+    const delRow = e.target.closest("[data-delgroup]");
+    if (delRow) {
+      const holder = delRow.closest("[data-card]");
+      delRow.closest("[data-bygrow]").remove();
+      if (!holder.querySelector("[data-bygrow]")) {
+        holder.querySelector(".byg-rows").appendChild(freshGroupRow());
+      }
+      _syncByGroup(holder, accessState.admins[Number(holder.dataset.card)]);
+      return;
+    }
     const btn = e.target.closest("[data-del]");
     if (!btn) return;
     accessState.admins.splice(Number(btn.dataset.del), 1);
     renderAdminCards();
+    // 删卡即时保存：不然切个页再回来，卡又原样回来了（看着像"自己消失又出现"）
+    saveCards({ dropEmpty: true });
   });
   $("addAdminCard").onclick = () => {
     accessState.admins = accessState.admins || [];
-    accessState.admins.push({ name: "管理员" + "ABCDEFG"[accessState.admins.length] , ids: [], call: {} });
+    accessState.admins.push({ name: "", ids: [], call: {} });
     renderAdminCards();
   };
+}
+
+// 白名单里有东西时，「为空时放行全部」这个开关没意义，直接禁用
+function syncAllowAllSwitch() {
+  const sw = $("allowAllSwitch");
+  if (!sw) return;
+  const n = (accessState.groups || []).length + (accessState.private || []).length;
+  const empty = n === 0;
+  sw.disabled = !empty;
+  sw.style.opacity = empty ? "" : ".4";
+  sw.style.cursor = empty ? "" : "not-allowed";
+  sw.title = empty ? "白名单现在是空的，可以选放不放"
+                   : "白名单里有 " + n + " 条，这个开关只在白名单为空时才生效";
+  if (!empty) {
+    accessState.allow_all = false;
+    sw.className = "sw";
+  }
 }
 
 async function loadAccess() {
@@ -2262,7 +2370,7 @@ async function loadAccess() {
     allow_all: settings.allow.allow_all_when_empty,
     owner: settings.owner_qq || "",
     admins: (settings.admins || []).map((c) => ({
-      name: c.name || "管理员",
+      name: c.name || "",
       ids: (c.ids || []).slice(),
       call: { private: (c.call || {}).private || "", group: (c.call || {}).group || "",
               by_group: Object.assign({}, (c.call || {}).by_group || {}) },
@@ -2274,18 +2382,59 @@ async function loadAccess() {
   makeChips($("denyPrivateChips"), accessState.deny_private);
   $("ownerQQ").value = accessState.owner;
   $("allowAllSwitch").className = "sw" + (accessState.allow_all ? " on" : "");
+  syncAllowAllSwitch();
   renderAdminCards();
 }
 
-async function saveCards() {
+async function saveCards(opts) {
+  const dropEmpty = !!(opts && opts.dropEmpty);
+  const err = $("cardsErr");
+  const btn = $("saveCardsBtn");
+  if (err) { err.hidden = true; err.textContent = ""; }
+  if (btn) { btn.disabled = true; btn.textContent = "保存中…"; }
   try {
-    const cards = (accessState.admins || []).filter((c) => (c.ids || []).length);
+    // 正在输入的框可能还没触发 input（比如刚粘完就点保存），先按 DOM 再收一遍
+    syncCardsFromDom();
+    const all = accessState.admins || [];
+    const noIds = dropEmpty ? -1 : all.findIndex((c) => !(c.ids || []).length);
+    if (noIds >= 0) {
+      // 没填 QQ 号的卡存不进去；别偷偷丢掉，直接把原因写出来
+      if (err) {
+        err.hidden = false;
+        err.textContent = "第 " + (noIds + 1) + " 张卡还没填 QQ 号——填上号再保存（不想留就点「删掉」）。";
+      }
+      toast("第 " + (noIds + 1) + " 张卡还没填 QQ 号");
+      return;
+    }
+    const cards = dropEmpty ? all.filter((c) => (c.ids || []).length) : all;
     const owner = (($("ownerQQ") && $("ownerQQ").value) || "").trim();
-    const payload = cards.length ? { admins: cards } : { owner_qq: owner };
+    // 卡删光了就提交空数组（显式清空），别再拿管理员 QQ 兜成一张默认卡
+    const payload = { admins: cards };
     await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
     toast("已保存");
     await loadAccess();
-  } catch (e) { toast("保存失败：" + e.message); }
+  } catch (e) {
+    if (err) { err.hidden = false; err.textContent = "没存上：" + e.message; }
+    toast("保存失败：" + e.message);
+  } finally {
+    if (btn) { btn.disabled = false; btn.textContent = "保存"; }
+  }
+}
+
+function syncCardsFromDom() {
+  document.querySelectorAll("#adminCards [data-card]").forEach((holder) => {
+    const i = Number(holder.dataset.card);
+    const card = accessState.admins && accessState.admins[i];
+    if (!card) return;
+    card.call = card.call || {};
+    holder.querySelectorAll("[data-k]").forEach((input) => {
+      const k = input.dataset.k;
+      if (k === "ids") card.ids = _splitIds(input.value);
+      else if (k === "name") card.name = input.value;
+      else card.call[k] = input.value;
+    });
+    _syncByGroup(holder, card);
+  });
 }
 
 async function saveAccess() {
@@ -2297,9 +2446,8 @@ async function saveAccess() {
         allow_all_when_empty: accessState.allow_all,
       },
     };
-    const cards = (accessState.admins || []).filter((c) => (c.ids || []).length);
-    if (cards.length) payload.admins = cards;
-    else payload.owner_qq = $("ownerQQ").value.trim();
+    // 这一页只存白名单和管理员 QQ；称呼卡归「称呼卡」页，别在这儿一起提交
+    payload.owner_qq = ($("ownerQQ").value || "").trim();
     await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
     toast("已保存");
     await loadAccess();
@@ -3154,6 +3302,7 @@ if (_fabReloadAll) _fabReloadAll.onclick = async () => {
 };
 
 $("allowAllSwitch").onclick = () => {
+  if ($("allowAllSwitch").disabled) return;
   accessState.allow_all = !accessState.allow_all;
   $("allowAllSwitch").className = "sw" + (accessState.allow_all ? " on" : "");
 };
@@ -3682,7 +3831,8 @@ applyPage(VIEWS[currentView] ? currentView : "overview");
 
 setInterval(function () {
   if (document.hidden) return;
-  if (["persona", "strategy", "access", "models", "playground", "lexicon", "messages"].indexOf(currentView) !== -1) {
+  // 这些页有输入框 / 正在编辑的内容：只刷状态，别整页重渲染（不然你打字打到一半就被回滚）
+  if (["persona", "strategy", "cards", "access", "models", "playground", "lexicon", "messages"].indexOf(currentView) !== -1) {
     loadStatus().then(loadPendingBadge).catch(function () {});
   } else {
     refresh();

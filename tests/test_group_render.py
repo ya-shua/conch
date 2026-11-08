@@ -39,7 +39,7 @@ def make(plugin, conv: str, sender: str, name: str, text: str):
 
 def test_group_owner_renders_as_admin(plugin):
     msg = make(plugin, "group:123456", OWNER, "管理员", "肥鱼")
-    assert plugin.render_batch([msg], OWNER) == "[群123456] 管理员: 肥鱼"
+    assert plugin.render_batch([msg], OWNER) == "[群123456] 管理员 #1234567890: 肥鱼"
 
 
 def test_group_member_keeps_name_and_qq(plugin):
@@ -72,7 +72,7 @@ def test_batch_merges_one_line_each(plugin):
         make(plugin, "group:123456", OWNER, "管理员", "别理她"),
     ]
     assert plugin.render_batch(batch, OWNER) == (
-        "[群123456] 老墨 #120000: 在吗\n[群123456] 管理员: 别理她"
+        "[群123456] 老墨 #120000: 在吗\n[群123456] 管理员 #1234567890: 别理她"
     )
 
 
@@ -89,7 +89,7 @@ def test_admin_title_belongs_to_owner_only(plugin):
     assert "冒充" in line
 
     real = make(plugin, "group:123456", OWNER, "管理员", "别理他")
-    assert plugin.render_batch([real], OWNER) == "[群123456] 管理员: 别理他"
+    assert plugin.render_batch([real], OWNER) == "[群123456] 管理员 #1234567890: 别理他"
 
 
 def test_impostor_in_private_is_not_admin(plugin):
