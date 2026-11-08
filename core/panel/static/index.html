@@ -3529,15 +3529,15 @@ async function runUpdate() {
   const bar = $("updBar");
   const go = $("updGo");
   if (bar) bar.classList.add("busy");
-  go.disabled = true;
-  go.textContent = "更新中…";
+  if (go) { go.disabled = true; go.textContent = "更新中…"; }
+  toast("正在下载新版本…");
   try {
     const d = await api("/api/update/apply", { method: "POST" });
     if (!d.ok) {
       toast("更新失败：" + (d.error || "未知原因"));
       return;
     }
-    go.textContent = "正在重启…";
+    if (go) go.textContent = "正在重启…";
     toast("代码已就位，正在重启海螺");
     let restarted = false;
     try {
@@ -3558,23 +3558,41 @@ async function runUpdate() {
   } catch (e) {
     toast("更新失败：" + e.message);
   } finally {
-    go.disabled = false;
-    go.textContent = "一键更新";
+    if (go) { go.disabled = false; go.textContent = "一键更新"; }
     if (bar) bar.classList.remove("busy");
   }
 }
 
-if ($("updGo")) $("updGo").onclick = (e) => { e.stopPropagation(); runUpdate(); };
-if ($("updBar")) $("updBar").onclick = (e) => {
-  if (e.target.closest("button")) return;
-  runUpdate();
-};
-if ($("updLater")) $("updLater").onclick = () => { updDismissed = (updInfo && updInfo.latest) || ""; $("updBar").hidden = true; };
-if ($("updNotes")) $("updNotes").onclick = async () => {
-  const notes = (updInfo && updInfo.notes) || "这次更新没写说明。";
-  await ask({ title: "这次改了什么", sub: notes, kind: "confirm", ok: "知道了", cancel: "关闭" });
-};
-setTimeout(() => checkUpdate(false), 1500);
+function initUpdBar() {
+  const bar = $("updBar");
+  if (!bar) return;
+  bar.onclick = (e) => {
+    if (e.target.closest("button")) return;
+    runUpdate();
+  };
+  const go = $("updGo");
+  const notes = $("updNotes");
+  const later = $("updLater");
+  if (go) go.onclick = (e) => { e.stopPropagation(); runUpdate(); };
+  if (later) later.onclick = (e) => {
+    e.stopPropagation();
+    updDismissed = (updInfo && updInfo.latest) || "";
+    bar.hidden = true;
+  };
+  if (notes) notes.onclick = async (e) => {
+    e.stopPropagation();
+    const body = (updInfo && updInfo.notes) || "这次更新没写说明。";
+    await ask({ title: "这次改了什么", sub: body, kind: "confirm", ok: "知道了", cancel: "关闭" });
+  };
+}
+
+// 角标在 body 末尾、这段脚本在它前面：等 DOM 好了再绑，否则拿到的是 null
+if (document.readyState === "loading") {
+  document.addEventListener("DOMContentLoaded", initUpdBar);
+} else {
+  initUpdBar();
+}
+setTimeout(() => { initUpdBar(); checkUpdate(false); }, 1500);
 
 $("verApply").onclick = async () => {
   const btn = $("verApply");
