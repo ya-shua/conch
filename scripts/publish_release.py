@@ -73,20 +73,24 @@ def call(method: str, path: str, body: dict | None = None) -> tuple[int, dict]:
 
 
 def version() -> str:
-    text = (ROOT / "__init__.py").read_text(encoding="utf-8")
-    match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
-    if not match:
-        raise SystemExit("读不到 __version__")
-    return match.group(1)
+    # core/version.py 是唯一真源；__init__.py 里那个只是 import 失败时的兜底
+    for rel in ("core/version.py", "__init__.py"):
+        text = (ROOT / rel).read_text(encoding="utf-8")
+        match = re.search(r'__version__\s*=\s*"([^"]+)"', text)
+        if match:
+            return match.group(1)
+    raise SystemExit("读不到 __version__")
 
 
 def tracked() -> list[str]:
+    # -z：中文文件名不转义、不加引号（否则后面 read_bytes 会找不到文件）
     proc = subprocess.run(
-        ["git", "-C", str(ROOT), "ls-files"], capture_output=True, text=True, encoding="utf-8"
+        ["git", "-c", "core.quotePath=false", "-C", str(ROOT), "ls-files", "-z"],
+        capture_output=True, text=True, encoding="utf-8",
     )
     if proc.returncode != 0:
         raise SystemExit("git ls-files 失败（先在仓库根跑一次 git init）")
-    return [line.strip() for line in proc.stdout.splitlines() if line.strip()]
+    return [line for line in proc.stdout.split("\0") if line.strip()]
 
 
 def section(ver: str) -> str:
