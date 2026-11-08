@@ -12,6 +12,8 @@
 from __future__ import annotations
 
 import asyncio
+import json
+import time
 import subprocess
 import sys
 import shutil
@@ -72,6 +74,120 @@ def compare(current: str, latest: str) -> bool:
     """latest 是否比 current 新。"""
     return _tuple(latest) > _tuple(current)
 
+
+# ---------------- 插件有没有新版（只检查，不动任何文件） ----------------
+
+PLUGIN_CACHE = "plugin_updates.json"
+PLUGIN_TTL = 6 * 3600  # 6 小时：GitHub 匿名 API 限流 60 次/小时，别每开一次面板就打
+
+
+def _cache_file() -> Path:
+    return project_root() / "data" / PLUGIN_CACHE
+
+
+def read_plugin_updates() -> dict:
+    """读上次检查结果；没有就是空。面板每次加载只读这个文件，不发请求。"""
+    path = _cache_file()
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return raw if isinstance(raw, dict) else {}
+
+
+def _write_plugin_updates(payload: dict) -> None:
+    path = _cache_file()
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
+    except Exception as exc:
+        log_.warning("插件更新缓存写不进去：%s", exc)
+
+
+def _plugin_source(raw) -> tuple[str, str]:
+    """把 metadata 里的 source 归一成 (repo, check)。支持 "owner/repo" 和对象。"""
+    if isinstance(raw, str):
+        return raw.strip().strip("/"), "release"
+    if isinstance(raw, dict):
+        repo = str(raw.get("repo") or "").strip().strip("/")
+        check = str(raw.get("check") or "release").strip().lower()
+        return repo, ("tag" if check == "tag" else "release")
+    return "", "release"
+
+
+async def _latest_of(session, repo: str, check: str) -> tuple[str, str]:
+    """返回 (最新版本, 错误)。先看 release，没有就退回 tags。"""
+    headers = {"Accept": "application/vnd.github+json", "User-Agent": "conch-plugin-check"}
+    if check == "release":
+        url = f"https://api.github.com/repos/{repo}/releases/latest"
+        try:
+            async with session.get(url, headers=headers) as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    tag = str(data.get("tag_name") or "").strip()
+                    if tag:
+                        return tag, ""
+                elif resp.status not in (403, 404):
+                    return "", f"GitHub 返回 {resp.status}"
+        except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+            return "", "连不上 GitHub"
+    # rank: tag 模式，或 release 拿不到
+    try:
+        async with session.get(
+            f"https://api.github.com/repos/{repo}/tags?per_page=20", headers=headers
+        ) as resp:
+            if resp.status != 200:
+                return "", f"GitHub 返回 {resp.status}"
+            tags = await resp.json()
+    except (aiohttp.ClientError, asyncio.TimeoutError, ValueError):
+        return "", "连不上 GitHub"
+    best = ""
+    for item in tags or []:
+        name = str(item.get("name") or "").strip()
+        if not name:
+            continue
+        if not best or _tuple(name) > _tuple(best):
+            best = name
+    return best, ("" if best else "仓库还没有打 tag")
+
+
+async def check_plugins(metas: dict, force: bool = False, timeout_s: float = 8.0) -> dict:
+    """检查所有声明了 source 的插件。返回 {pid: {current, latest, has_update, error}}。
+
+    只读：不下载、不覆盖、不重启。更新请到插件自己的页面做。
+    """
+    cache = read_plugin_updates()
+    items = dict(cache.get("items") or {})
+    fetched_at = float(cache.get("fetched_at") or 0)
+    fresh = (time.time() - fetched_at) < PLUGIN_TTL
+    if fresh and not force:
+        return items
+
+    todo = []
+    for pid, meta in metas.items():
+        repo, check = _plugin_source(getattr(meta, "source", ""))
+        if not repo:
+            continue
+        todo.append((pid, repo, check, str(getattr(meta, "version", "") or "")))
+
+    if not todo:
+        _write_plugin_updates({"fetched_at": time.time(), "items": {}})
+        return {}
+
+    timeout = aiohttp.ClientTimeout(total=timeout_s)
+    async with aiohttp.ClientSession(timeout=timeout) as session:
+        for pid, repo, check, current in todo:
+            latest, err = await _latest_of(session, repo, check)
+            items[pid] = {
+                "repo": repo,
+                "current": current,
+                "latest": latest,
+                "has_update": bool(latest) and compare(current, latest),
+                "error": err,
+                "checked_at": int(time.time()),
+            }
+    _write_plugin_updates({"fetched_at": time.time(), "items": items})
+    return items
 
 async def check(timeout_s: float = 8.0) -> dict:
     """查最新 release。任何异常都折成 ok=False，别让面板因此空白。"""

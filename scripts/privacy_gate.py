@@ -248,6 +248,8 @@ def main(argv: list[str]) -> int:
     for rel in files:
         if rel == "scripts/privacy_gate.py":  # 名单就写在这儿，不查自己
             continue
+        if "/vendor/" in rel:  # 第三方源码（比如 silk-wasm），不逐行扫
+            continue
         if BLOCKED_FILES.search(rel) or any(rel.startswith(p) or f"/{p}" in rel for p in BLOCKED_PATHS):
             blocked.append(f"路径  {rel}  ← 这类文件不许入库")
             continue

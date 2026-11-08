@@ -148,6 +148,21 @@ token 只留给脚本用。
 
 ---
 
+## 她听得懂语音
+
+QQ 语音是 **silk**（ffmpeg 解不了），海螺自己解：`plugins/conch/tools/silk_decode.cjs` + `vendor/silk-wasm`
+（纯 wasm，不用编译）→ 16k wav → OpenAI 兼容的 `/audio/transcriptions`。
+
+- ASR 配置**跟「留影」共享**（`留影/data/vision.json` 的 `asr` 段，默认硅基流动 `SenseVoiceSmall`）；
+  想单独用就在 `config.json` 里写 `asr`，留空即跟随
+- 单模型并发，默认同时 2 条：单条 ~1–1.7 秒，3 条同时 ~2.2 秒
+- 转写结果标成 `[语音转写] …` 进上下文，人设里让她按上下文顺字但**不许改意思**，关键信息拿不准就问一句
+- 转不出来当没听见：不回、不写记录，不会发半句乱码
+
+细节见 [docs/语音转写.md](docs/语音转写.md)。
+
+---
+
 ## 插件
 
 仓库自带两个插件，其它能力一律从外面接：
@@ -212,7 +227,7 @@ v0.1.6 起不再内置情绪和留影：它们是独立程序，在 `config.json
 
 ```json
 "launch": {
-  "cmd": "D:\\Tools\\seek\\seek.exe",
+  "cmd": "<安装路径>\\seek.exe",
   "args": ["--serve", "--port", "6123"],
   "port": 6123
 }

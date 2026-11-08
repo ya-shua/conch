@@ -17,11 +17,14 @@ from __future__ import annotations
 import asyncio
 import json
 import random
+import shutil
 import re
 import time
 import urllib.request
 from pathlib import Path
 
+import aiohttp
+from dataclasses import replace
 from core.config import DEFAULT_CLOSING_WORDS, norm_id
 from core.message import Message, Segment, make_text
 from core.pipeline import Merger
@@ -43,10 +46,10 @@ def system_prompt(ctx) -> str:
             if candidate.exists():
                 text = candidate.read_text(encoding="utf-8").strip()
                 if text:
-                    return text
+                    return f"{text}\n\n{VOICE_RULE}"
         except OSError as exc:
             ctx.log.warning("读人设失败：%s", exc)
-    return DEFAULT_SYSTEM
+    return f"{DEFAULT_SYSTEM}\n\n{VOICE_RULE}"
 
 
 _CQ_RE = re.compile(r"\[CQ:([a-zA-Z_]+)((?:,[^\]]*)?)\]")
@@ -55,7 +58,7 @@ _CQ_RE = re.compile(r"\[CQ:([a-zA-Z_]+)((?:,[^\]]*)?)\]")
 _STICKER_LINE = re.compile(r"^[【\[]\s*表\s*情(?:包)?\s*[:：]\s*(.+?)\s*[】\]]$")
 _STICKER_ANY = re.compile(r"[【\[]\s*表\s*情(?:包)?\s*[:：][^】\]]*[】\]]")
 
-# 模型发语音时写的一行：<audio src="D:\\AI\\声音工坊\\outputs\\x.wav"></audio>
+# 模型发语音时写的一行：<audio src="<语音文件路径>\\x.wav"></audio>
 # voice_tts 只返回文件路径，模型不会自己拼 record 段，所以这里把标签翻成真语音。
 _AUDIO_TAG = re.compile(
     r"<audio\b[^>]*?\bsrc\s*=\s*(?:\"([^\"]+)\"|'([^']+)'|([^\s>\"']+))[^>]*>(?:\s*</audio>)?",
@@ -1254,6 +1257,7 @@ async def send_to_group(ctx, target: str, text: str) -> tuple[bool, str]:
         ctx.store.message_add(conv, "out", text, plugin_id=ctx.id)
     except Exception:
         pass
+    _ = asyncio.create_task(remember_own(ctx, conv, text, f"remote-{int(time.time() * 1000)}"))
     ctx.log.info("遥控发群 %s：%s", conv, text[:40])
     return True, f"已发到「{group_name(gid)}」"
 
@@ -1284,45 +1288,445 @@ async def run_remote(ctx, reply: str) -> str:
 
 # ---------- 自动入库：消息进记忆库，跟她想不想得起来无关 ----------
 
-async def remember_into_ring(ctx, msg: Message) -> None:
-    """把听到的话丢进记忆库（环形的心）。
+def _card_who(ctx, sender_id: str) -> str:
+    """这个人的卡名（记忆槽位用）；外人没有卡，返回空。"""
+    card = _card_of(ctx.cfg, str(sender_id or ""))
+    if not card:
+        return ""
+    return str(card.get("name") or "").strip() or _admin_default_name(ctx.cfg, card)
 
-    这是「接盘层」：`ring_ingest` 是记忆库留给桥接层的机器工具，故意不进她的工具清单 ——
-    她想不起来要调它，所以只能这边替她记。她要不要主动「记一件事」还是走 ring_remember。
+
+def _conv_key(conv_id: str, kind: str, who: str = "") -> str:
+    """记忆库的槽位。
+
+    - 群：`group:<群号>`——一个群一个槽
+    - 私聊、有称呼卡：`private:card:<卡名>`——一张卡绑几个号，在记忆里还是同一个人
+    - 私聊、没卡（外人）：`private:<QQ号>`——张三和李四绝不能拼成一条
+    """
+    tail = norm_id(str(conv_id or "").split(":", 1)[-1])
+    if kind != "group":
+        name = str(who or "").strip()
+        if name:
+            return f"private:card:{name}"
+    if not tail:
+        return str(conv_id or kind or "private")
+    return f"{'group' if kind == 'group' else 'private'}:{tail}"
+
+
+def _ms(ts) -> int:
+    try:
+        value = int(float(ts or 0))
+    except Exception:
+        return 0
+    return value * 1000 if 0 < value < 10**11 else value
+
+
+async def ring_ingest(
+    ctx,
+    *,
+    conv_id: str,
+    kind: str,
+    speaker: str,
+    content: str,
+    message_id: str = "",
+    at=0,
+    note: str = "",
+    who: str = "",
+) -> None:
+    """往记忆库写一条。这是「接盘层」：只在桥接这边调，不进她的工具清单。
+
+    speaker 只认两个值：`user`（别人说的）/ `self`（她自己说的，记忆库里权重 ×3）。
     """
     if not getattr(ctx.cfg, "memory_ingest_enabled", True):
+        return
+    if not str(content or "").strip():
         return
     pool = ctx.services.get("mcppool") if getattr(ctx, "services", None) else None
     if pool is None:
         return
-    speaker_label_text = speaker_label(msg, ctx.cfg)
-    # 记忆里的 speaker 用「卡名」：一卡多号写进去是同一个 speaker，她才认得出是同一个人；
-    # 号码只留在正文里，要追溯「是哪个号说的」再看。
-    card = _card_of(ctx.cfg, msg.sender_id)
-    if card:
-        speaker = str(card.get("name") or "").strip() or _admin_default_name(ctx.cfg, card)
-    else:
-        speaker = speaker_label_text
-    # 跟她看到的一致：带「在哪」和 QQ 号。以后翻记忆能认出「这是那个群、还是同一个人改过名」
+    payload = {
+        "content": content,
+        "speaker": "self" if speaker == "self" else "user",
+        "source": "group" if kind == "group" else "private",
+        "conv_key": _conv_key(conv_id, kind, who),
+    }
+    if message_id:
+        payload["message_id"] = str(message_id)
+    at_ms = _ms(at)
+    if at_ms:
+        payload["at"] = at_ms
+    if note:
+        payload["note"] = note
+    try:
+        reply = await pool.call_raw("ring", "ring_ingest", payload)
+        ctx.log.debug("记忆入库：%s", str(reply)[:80])
+    except Exception as exc:
+        ctx.log.debug("记忆入库失败：%s", exc)
+
+
+def _voice_text_of(msg) -> str:
+    """这条消息如果是从语音转来的，取出转写正文（正文以 VOICE_MARK 开头）。"""
+    text = str(getattr(msg, "text", "") or "")
+    return text[len(VOICE_MARK):] if text.startswith(VOICE_MARK) else ""
+
+
+async def remember_into_ring(ctx, msg: Message, heard: str = "") -> None:
+    """把听到的话丢进记忆库（环形的心）。
+
+    按「一个聊天一个槽位 + 一个发言方一个槽位」写，带 message_id 防重复投递。
+    正文里保留「在哪 + 谁 + 号」，以后翻记忆认得出是同一个人换号、还是换了群。
+    """
+    if not str(msg.text or "").strip() and not heard:
+        return  # 纯图 / 没转出来的语音：没有可记的文字
+    display = speaker_label(msg, ctx.cfg)
+    who = _card_who(ctx, msg.sender_id)
     if msg.kind == "group":
         gid = norm_id(msg.conv_id.split(":", 1)[-1])
         tag = f"[群{gid}]" if gid else "[群]"
     else:
         tag = "[私聊]"
-    content = f"{tag} {speaker_label_text}：{msg.text}"
+    note = ""
+    body = msg.text
+    if heard:
+        # 语音：正文带「语音转写·可能有错」标记 + 转写，note 再标注一次
+        body = f"{VOICE_MARK.strip()} {heard}"
+        note = "语音转写，可能不准"
+    await ring_ingest(
+        ctx,
+        conv_id=msg.conv_id,
+        kind=msg.kind,
+        speaker="user",
+        content=f"{tag} {display}：{body}",
+        message_id=str(msg.message_id or ""),
+        at=msg.ts,
+        note=note,
+        who=who,
+    )
+
+
+# ---------- 语音转写：跟「留影」借同一套 ASR（OpenAI 兼容 /audio/transcriptions） ----------
+
+# 语音转出来的字不是原话：带个短标记，规则写在人设提示里（每轮一句，不逐条占地方）
+VOICE_MARK = "[语音转写] "
+VOICE_RULE = (
+    "带「语音转写」的消息是机器听出来的，可能有错字：按上下文顺着理解（名字、常用词明显听错的，"
+    "按对的理解），别把错字当原话；但顺字不能改意思，时间、数字、要做的事拿不准就问一句。"
+)
+
+_ASR_CACHE: dict = {"key": None, "cfg": None}
+# 同时最多几条语音在转（单模型并发，不是多模型）
+_ASR_SLOTS: dict = {"sem": None, "size": 0}
+
+
+def _asr_semaphore(limit: int):
+    size = max(1, min(4, int(limit or 2)))
+    if _ASR_SLOTS["sem"] is None or _ASR_SLOTS["size"] != size:
+        _ASR_SLOTS["sem"] = asyncio.Semaphore(size)
+        _ASR_SLOTS["size"] = size
+    return _ASR_SLOTS["sem"]
+
+
+def _find_liuying_asr() -> dict:
+    """从留影的 data/vision.json 里抄 asr 配置；找不到就空。"""
+    roots = []
     try:
-        reply = await pool.call_raw(
-            "ring",
-            "ring_ingest",
-            {
-                "content": content,
-                "speaker": speaker or "user",
-                "source": "group" if msg.kind == "group" else "private",
-            },
-        )
-        ctx.log.debug("记忆入库：%s", str(reply)[:80])
+        roots.append(Path(__file__).resolve().parents[2].parent)  # 海螺的上一级 = 桌面\插件
+    except Exception:
+        pass
+    for root in roots:
+        for name in ("留影", "liuying-vision", "留影插件"):
+            path = root / name / "data" / "vision.json"
+            if path.is_file():
+                try:
+                    return dict(json.loads(path.read_text(encoding="utf-8-sig")).get("asr") or {})
+                except Exception:
+                    return {}
+    return {}
+
+
+def _asr_settings(ctx) -> dict | None:
+    own = dict(getattr(ctx.cfg, "asr", None) or {})
+    if own.get("enabled") is False:
+        return None
+    borrowed = _find_liuying_asr()
+    base_url = str(own.get("base_url") or borrowed.get("baseUrl") or "").strip()
+    model = str(own.get("model") or borrowed.get("model") or "").strip()
+    api_key = str(own.get("api_key") or borrowed.get("apiKey") or "").strip()
+    if not (base_url and model):
+        return None
+    ffmpeg = str(own.get("ffmpeg") or "").strip()
+    if not ffmpeg:
+        root = None
+        try:
+            root = Path(__file__).resolve().parents[2].parent
+        except Exception:
+            root = None
+        for name in ("留影", "liuying-vision"):
+            cand = (root / name / "bin" / "ffmpeg.exe") if root else None
+            if cand and cand.is_file():
+                ffmpeg = str(cand)
+                break
+    return {
+        "base_url": base_url.rstrip("/"),
+        "model": model,
+        "api_key": api_key,
+        "language": str(own.get("language") or borrowed.get("language") or ""),
+        "ffmpeg": ffmpeg or "ffmpeg",
+    }
+
+
+def _voice_source(msg) -> tuple[str, str]:
+    """返回 (kind, value)：kind 是 file / url / id。
+
+    - `file`：本地就能读到的路径
+    - `url`：QQ CDN 的下载链接
+    - `id`：OneBot 给的文件名/缓存 id，要问 NapCat 拿（silk 就靠这条路转 mp3）
+    """
+    for seg in msg.segments:
+        if seg.type != "record":
+            continue
+        path = str(seg.data.get("file") or "").strip()
+        if path and Path(path).is_file():
+            return "file", path
+        url = str(seg.data.get("url") or "").strip()
+        if url:
+            return "url", url
+        if path:
+            return "id", path
+    return "", ""
+
+
+def _is_silk(raw: bytes) -> bool:
+    return b"#!SILK" in raw[:16]  # 真实文件前面常有一个 0x02 字节
+
+
+async def _record_via_onebot(ctx, file_id: str) -> bytes | None:
+    """让 NapCat 把语音转成 mp3 再给我（它自带 silk 解码）。"""
+    onebot = ctx.services.get("onebot") if getattr(ctx, "services", None) else None
+    if onebot is None or not file_id:
+        return None
+    try:
+        data = await onebot.call("get_record", {"file": file_id, "out_format": "mp3"})
     except Exception as exc:
-        ctx.log.debug("记忆入库失败：%s", exc)
+        ctx.log.debug("get_record 失败：%s", exc)
+        return None
+    if not isinstance(data, dict):
+        return None
+    path = str(data.get("file") or "")
+    url = str(data.get("url") or "")
+    try:
+        if path and Path(path).is_file():
+            return Path(path).read_bytes()
+        if url:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(url) as resp:
+                    if resp.status == 200:
+                        return await resp.read()
+    except Exception as exc:
+        ctx.log.debug("取 get_record 结果失败：%s", exc)
+    return None
+
+
+def _node_bin(ctx) -> str:
+    """找 node：插件里配的 → look 服务用的 → PATH → 常见位置。"""
+    own = str((getattr(ctx.cfg, "asr", None) or {}).get("node") or "").strip()
+    if own and Path(own).is_file():
+        return own
+    look = (getattr(ctx.cfg, "raw", None) or {}).get("look") or {}
+    if isinstance(look, dict):
+        node = str(look.get("node") or "").strip()
+        if node and Path(node).is_file():
+            return node
+    found = shutil.which("node")
+    if found:
+        return found
+    for cand in (r"C:\Program Files\nodejs\node.exe",):
+        if Path(cand).is_file():
+            return cand
+    return ""
+
+
+async def _silk_to_wav(ctx, raw: bytes, ffmpeg: str) -> bytes | None:
+    """silk → 16k 单声道 wav（ffmpeg 解不了 silk，用 vendor 里的 silk-wasm 解）。"""
+    node = _node_bin(ctx)
+    script = Path(__file__).resolve().parent / "tools" / "silk_decode.cjs"
+    if not node or not script.is_file():
+        ctx.log.debug("没有 node 或 silk 解码脚本，解不了 silk")
+        return None
+    tmp = Path(getattr(ctx.cfg, "data_dir", "data")) / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    stamp = int(time.time() * 1000)
+    src = tmp / f"silk-{stamp}.silk"
+    pcm = tmp / f"silk-{stamp}.pcm"
+    try:
+        src.write_bytes(raw)
+        proc = await asyncio.create_subprocess_exec(
+            node, str(script), str(src), str(pcm),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=60)
+        if proc.returncode != 0 or not pcm.is_file():
+            return None
+        data = pcm.read_bytes()
+        if len(data) < 1024:
+            return None
+        # 套个标准 wav 头（16 位单声道 16k），省一次转码
+        header = b"RIFF" + (36 + len(data)).to_bytes(4, "little") + b"WAVEfmt "
+        header += (16).to_bytes(4, "little") + (1).to_bytes(2, "little") + (1).to_bytes(2, "little")
+        header += (16000).to_bytes(4, "little") + (32000).to_bytes(4, "little")  # privacy-ok 采样率/字节率
+        header += (2).to_bytes(2, "little") + (16).to_bytes(2, "little") + b"data"
+        header += len(data).to_bytes(4, "little")
+        return header + data
+    except Exception as exc:
+        ctx.log.debug("silk 转 wav 失败：%s", exc)
+        return None
+    finally:
+        for f in (src, pcm):
+            try:
+                f.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+async def _to_audio(ctx, source: str, value: str, ffmpeg: str) -> tuple[bytes, str] | None:
+    """取到能喂给 ASR 的音频，返回 (字节, 格式)。"""
+    raw = b""
+    if source == "file":
+        try:
+            raw = Path(value).read_bytes()
+        except Exception:
+            raw = b""
+    elif source == "url":
+        try:
+            timeout = aiohttp.ClientTimeout(total=30)
+            async with aiohttp.ClientSession(timeout=timeout) as session:
+                async with session.get(value) as resp:
+                    if resp.status != 200:
+                        return None
+                    raw = await resp.read()
+        except Exception as exc:
+            ctx.log.debug("语音下载失败：%s", exc)
+            return None
+
+    if not raw:
+        return None
+
+    # QQ 语音基本都是 silk：自己解（ffmpeg 不认）
+    if _is_silk(raw):
+        wav = await _silk_to_wav(ctx, raw, ffmpeg)
+        return (wav, "audio/wav") if wav else None
+
+    if raw[:3] == b"ID3" or (len(raw) > 1 and raw[0] == 0xFF and raw[1] in (0xFB, 0xF3, 0xF2)):
+        return raw, "audio/mpeg"
+
+    tmp = Path(getattr(ctx.cfg, "data_dir", "data")) / "tmp"
+    tmp.mkdir(parents=True, exist_ok=True)
+    src = tmp / f"asr-{int(time.time() * 1000)}.bin"
+    dst = src.with_suffix(".mp3")
+    try:
+        src.write_bytes(raw)
+        proc = await asyncio.create_subprocess_exec(
+            ffmpeg, "-y", "-hide_banner", "-loglevel", "error",
+            "-i", str(src), "-vn", "-ac", "1", "-ar", "16000", "-b:a", "48k", str(dst),  # privacy-ok 采样率
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.DEVNULL,
+        )
+        await asyncio.wait_for(proc.wait(), timeout=60)
+        if dst.is_file() and dst.stat().st_size > 1024:
+            return dst.read_bytes(), "audio/mpeg"
+        return None
+    except Exception as exc:
+        ctx.log.debug("语音转码失败：%s", exc)
+        return None
+    finally:
+        for f in (src, dst):
+            try:
+                f.unlink(missing_ok=True)
+            except Exception:
+                pass
+
+
+async def transcribe_voice(ctx, msg) -> str:
+    """语音 → 文字。失败一律返回空串：听不清就当没听见，不能拖累回话。"""
+    source, value = _voice_source(msg)
+    if not source:
+        return ""
+    settings = _asr_settings(ctx)
+    if not settings:
+        ctx.log.debug("语音转写没配（留影里也没读到 asr）")
+        return ""
+    try:
+        limit = int((getattr(ctx.cfg, "asr", None) or {}).get("concurrency") or 2)
+    except Exception:
+        limit = 2
+    sem = _asr_semaphore(limit)
+
+    async def _ours() -> str:
+        async with sem:
+            return await _transcribe_remote(ctx, source, value, settings)
+
+    ours = await _ours()
+    ours = ours if isinstance(ours, str) else ""
+    if ours:
+        ctx.log.info("语音转写：%s", ours[:40])
+    return ours
+
+
+
+
+async def _transcribe_remote(ctx, source: str, value: str, settings: dict) -> str:
+    """我们自己的那路：取音频 → POST ASR。"""
+    got = await _to_audio(ctx, source, value, settings["ffmpeg"])
+    if not got:
+        return ""
+    audio, mime = got
+    ext = "wav" if mime.endswith("wav") else "mp3"
+    try:
+        form = aiohttp.FormData()
+        form.add_field("file", audio, filename=f"audio.{ext}", content_type=mime)
+        form.add_field("model", settings["model"])
+        if settings["language"]:
+            form.add_field("language", settings["language"])
+        headers = {"Authorization": f"Bearer {settings['api_key']}"} if settings["api_key"] else {}
+        timeout = aiohttp.ClientTimeout(total=90)
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(
+                settings["base_url"] + "/audio/transcriptions", data=form, headers=headers
+            ) as resp:
+                if resp.status != 200:
+                    body = await resp.text()
+                    ctx.log.warning("语音转写失败 HTTP %s：%s", resp.status, body[:120])
+                    return ""
+                data = await resp.json()
+        text = str(data.get("text") or "").strip()
+        if text:
+            ctx.log.info("语音转写：%s", text[:40])
+        return text[:500]
+    except Exception as exc:
+        ctx.log.warning("语音转写出错：%s", exc)
+        return ""
+
+
+async def remember_own(ctx, conv_id: str, text: str, turn_id: str = "", who: str = "") -> None:
+    """她自己发出去的话也写进记忆库：speaker=self，记忆库里按 ×3 存活。"""
+    clean = _AUDIO_TAG.sub("[语音]", _STICKER_ANY.sub("", str(text or ""))).strip()
+    if not clean:
+        return
+    kind = "group" if str(conv_id).startswith("group:") else "private"
+    if kind == "group":
+        gid = norm_id(str(conv_id).split(":", 1)[-1])
+        tag = f"[群{gid}]" if gid else "[群]"
+    else:
+        tag = "[私聊]"
+    await ring_ingest(
+        ctx,
+        conv_id=conv_id,
+        kind=kind,
+        speaker="self",
+        content=f"{tag} {clean}",
+        message_id=f"out:{turn_id}" if turn_id else "",
+        who=who,
+    )
 
 
 async def on_message(ctx, merger: Merger, msg: Message) -> None:
@@ -1357,7 +1761,15 @@ async def on_message(ctx, merger: Merger, msg: Message) -> None:
         ctx.log.debug("message.observed 出错：%s", exc)
 
     if not msg.text:
-        return None  # M1 只处理文本
+        # 纯语音：试着转成文字；转不出来就当没听见（图片 / 表情还是走上面的 observed）
+        heard = await transcribe_voice(ctx, msg) if any(seg.type == "record" for seg in msg.segments) else ""
+        if not heard:
+            return None
+        msg = replace(
+            msg,
+            segments=[Segment("text", {"text": f"{VOICE_MARK}{heard}"})]
+            + [seg for seg in msg.segments if seg.type != "text"],
+        )
 
     try:
         ctx.store.message_add(
@@ -1373,7 +1785,7 @@ async def on_message(ctx, merger: Merger, msg: Message) -> None:
         ctx.log.warning("写聊天记录失败：%s", exc)
 
     # 每条听到的话顺手进记忆库：不占她的回复时间，失败了也不影响说话
-    _ = asyncio.create_task(remember_into_ring(ctx, msg))
+    _ = asyncio.create_task(remember_into_ring(ctx, msg, heard=_voice_text_of(msg)))
 
     if not should_reply(ctx, msg):
         return None
@@ -1549,6 +1961,10 @@ async def run_turn(ctx, batch: list[Message]) -> None:
     except Exception as exc:
         ctx.log.error("发送失败 conv=%s：%s", conv_id, exc)
         return
+    # 她自己说的话也进记忆库（speaker=self）：放在发出去之后，没发成功就不算她说过
+    _ = asyncio.create_task(
+        remember_own(ctx, conv_id, reply, str(turn_id), _card_who(ctx, batch[0].sender_id))
+    )
     try:
         ctx.store.message_add(conv_id, "out", reply, plugin_id=ctx.id)
     except Exception as exc:

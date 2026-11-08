@@ -128,6 +128,8 @@ class Config:
     closing_words: list[str] = field(default_factory=lambda: list(DEFAULT_CLOSING_WORDS))
     # 听到的话顺手写进记忆库（环形的心），跟她想不想得起来无关
     memory_ingest_enabled: bool = True
+    # 语音转写：空着就跟「留影」插件借配置（data/vision.json 的 asr 段）
+    asr: dict[str, Any] = field(default_factory=dict)
     data_dir: str = "data"
     roles_dir: str = "roles"
     plugins_dir: str = "plugins"
@@ -349,6 +351,8 @@ def load_config(path: str | Path) -> Config:
     cfg.catch_up_minutes = max(1, int(raw.get("catch_up_minutes") if raw.get("catch_up_minutes") is not None else 30))
     cfg.closing_enabled = bool(raw.get("closing_enabled", True))
     cfg.memory_ingest_enabled = bool(raw.get("memory_ingest_enabled", True))
+    asr_raw = raw.get("asr")
+    cfg.asr = dict(asr_raw) if isinstance(asr_raw, dict) else {}
     words = raw.get("closing_words")
     if isinstance(words, list):
         cfg.closing_words = [str(w).strip() for w in words if str(w).strip()]

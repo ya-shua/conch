@@ -18,7 +18,22 @@ import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
-PLUGIN = Path(__file__).resolve().parents[2] / "tide" / "plugins" / "mood" / "main.py"
+def _find_mood() -> Path:
+    """情绪插件是外部程序：先看旁边的 tide，再看本机 config 里 plugin_paths 指到哪。"""
+    root = Path(__file__).resolve().parents[1]
+    cands = [root / "tide" / "plugins" / "mood" / "main.py"]
+    cfg = root / "config.json"
+    if cfg.exists():
+        try:
+            data = json.loads(cfg.read_text(encoding="utf-8-sig"))
+            for raw in data.get("plugin_paths") or []:
+                cands.append(Path(raw) / "mood" / "main.py")
+        except Exception:
+            pass
+    return next((c for c in cands if c.exists()), cands[0])
+
+
+PLUGIN = _find_mood()
 
 pytestmark = pytest.mark.skipif(not PLUGIN.exists(), reason="情绪插件不在本机")
 

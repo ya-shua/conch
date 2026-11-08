@@ -296,6 +296,17 @@ input[type=number]{font-variant-numeric:tabular-nums;max-width:110px}
 .roleedit{display:flex;flex-direction:column}
 .roleedit .sec-body{display:flex;flex-direction:column;flex:1}
 .roleedit textarea{min-height:440px;flex:1}
+.updbadge{display:inline-block;margin-left:6px;padding:2px 9px;border-radius:999px;
+  background:var(--acc-fg);color:#fff;border:0;font-size:12px;font-weight:750;vertical-align:1px;
+  box-shadow:0 1px 0 rgba(0,0,0,.18)}
+.updbanner{display:none;margin:0 0 12px;padding:12px 14px;border-radius:10px;
+  background:var(--acc-bg);border:1.5px solid var(--acc-bd);
+  font-size:14px;font-weight:600;color:var(--acc-fg);line-height:1.6;
+  align-items:center;gap:10px;justify-content:space-between}
+.updbanner.on{display:flex}
+.updbanner b{font-weight:800}
+.updbanner .ubl{font-size:13px;font-weight:500;opacity:.9}
+.updbanner button{flex:none}
 .plugs{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:16px;align-items:stretch;padding:3px}
 @media (max-width:1240px){.plugs{grid-template-columns:repeat(2,minmax(0,1fr))}}
 @media (max-width:820px){.plugs{grid-template-columns:minmax(0,1fr)}}
@@ -570,10 +581,18 @@ details.fold>.fbody{padding:16px 18px}
   box-shadow:0 24px 60px -18px rgba(12,14,22,.45),0 2px 6px rgba(12,14,22,.08);overflow:hidden;
   animation:dlgIn .14s ease-out}
 @keyframes dlgIn{from{opacity:0;transform:translateY(6px) scale(.985)}to{opacity:1;transform:none}}
+.mask.emphasis .dlg{width:min(520px,92vw);border:2px solid var(--acc-bd);
+  box-shadow:0 18px 60px rgba(0,0,0,.28)}
+.mask.emphasis .dlg-h{padding:20px 22px 0}
+.mask.emphasis .dlg-h h3{font-size:19px;font-weight:800;letter-spacing:.2px;color:var(--acc-fg)}
+.mask.emphasis .dlg-b{padding:10px 22px 18px}
+.mask.emphasis .dsub{font-size:13.5px}
+.mask.emphasis .dlg-f{padding:14px 20px}
+.mask.emphasis #dlgYes{font-weight:700}
 .dlg-h{padding:16px 18px 0}
 .dlg-h h3{margin:0;font-size:14.5px;font-weight:650;line-height:1.45}
 .dlg-b{padding:8px 18px 16px;display:flex;flex-direction:column;gap:9px}
-.dlg-b .dsub{font-size:12px;color:var(--muted);line-height:1.6}
+.dlg-b .dsub{font-size:12.5px;color:var(--text-2);line-height:1.75;white-space:pre-line}
 .dlg-b input{width:100%}
 .dlg-b .derr{font-size:11.5px;color:var(--bad)}
 .dlg-f{display:flex;justify-content:flex-end;gap:8px;padding:12px 16px;border-top:1px solid var(--border-2);background:var(--surface-2)}
@@ -772,11 +791,13 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
             <div class="sec-head"><h2>海螺插件</h2>
               <span style="display:flex;align-items:center;gap:8px">
                 <span class="note">顺序按控制台定：网关 → 随海螺装的 → 接进来的 → 外面那套服务；启动＝后台拉起并打开页面</span>
+                <button class="sm" id="plugCheckBtn" title="只查有没有新版，更新去插件自己的页面">检查插件更新</button>
                 <button class="sm" id="stopAllBtn" style="border-color:#e0b4b4;color:#b8342b">一键关闭所有服务</button>
               </span>
             </div>
             <div class="sec-body">
               <div class="hint" id="coreLine">海螺 v— · 替她说话、管这些插件</div>
+              <div class="updbanner" id="updBanner"></div>
               <div class="plugs" id="pluginGrid"></div>
             </div>
           </section>
@@ -1296,6 +1317,7 @@ let pgBusy = false;
 function ask(opts) {
   return new Promise((resolve) => {
     const mask = $("dlgMask");
+    mask.classList.toggle("emphasis", !!opts.emphasis);
     const input = $("dlgInput");
     const kind = opts.kind || "confirm";
     $("dlgTitle").textContent = opts.title || "";
@@ -1317,6 +1339,7 @@ function ask(opts) {
       if (closed) return;
       closed = true;
       mask.classList.remove("on");
+      mask.classList.remove("emphasis");
       yes.onclick = null;
       $("dlgNo").onclick = null;
       mask.onclick = null;
@@ -1566,11 +1589,48 @@ async function loadPlugins() {
   const mine = all.filter((p) => p.id !== "conch");
   const externals = launchRes.items || [];
 
+  const updatable = all.filter((p) => p.update && p.update.has_update);
+  const banner = $("updBanner");
+  if (banner) {
+    if (updatable.length) {
+      banner.innerHTML = "<span>⬆ <b>" + updatable.length + " 个插件有新版本</b>" +
+        ' <span class="ubl">' + updatable.map((p) => esc(p.alias || p.name || p.id) + " " + esc(p.update.latest)).join(" · ") +
+        "</span></span>" +
+        '<button class="sm" id="updOpenBtn">查看</button>';
+      banner.classList.add("on");
+      $("updOpenBtn").onclick = () => showUpdateDialog(updatable.map((p) => ({
+        id: p.id, name: p.alias || p.name, current: p.version, latest: p.update.latest,
+        page: p.page, launch: externals.find((x) => x.id === p.id),
+      })));
+    } else {
+      banner.classList.remove("on");
+      banner.innerHTML = "";
+    }
+  }
+
   if ($("coreLine")) {
     $("coreLine").textContent = core
       ? "海螺 Conch v" + core.version + " · 两件事：替她说话、管下面这些插件"
       : "海螺 Conch · 两件事：替她说话、管下面这些插件";
   }
+
+  // 有新版时：顶部横幅 + 弹窗（只说"去它自己的页面更新"，宿主不动文件）
+  const showUpdateDialog = (list) => {
+    const lines = list.map((x) => "· " + (x.name || x.id) + "：" + x.current + " → " + (x.latest || "?"));
+    ask({
+      title: "⬆ 有 " + list.length + " 个插件可更新",
+      emphasis: true,
+      sub: lines.join("\n") + "\n\n海螺不会替你改插件文件，点「去更新」打开它自己的页面。",
+      ok: "去更新",
+      cancel: "稍后",
+    }).then((yes) => {
+      if (!yes) return;
+      const target = list[0];
+      const url = target.page || (target.launch && target.launch.url) || "";
+      if (url) window.open(url, "_blank");
+      else toast("它没有页面，去它的目录里升级");
+    });
+  };
 
   // 卡片统一结构：头像 + 名字/状态 / 说明 / 底栏（id + 按钮组）
   const shell = (opts) =>
@@ -1634,7 +1694,11 @@ async function loadPlugins() {
       ren: p.id,
       en: p.name_en || (launch && launch.en) || p.id,
       pill: st,
-      meta: "v" + esc(p.version) + " · 海螺插件" + (p.author ? " · " + esc(p.author) : "") + port,
+      meta: "v" + esc(p.version) +
+        (p.update && p.update.has_update
+          ? ' <span class="updbadge" title="去它自己的页面更新">可更新 ' + esc(p.update.latest) + "</span>"
+          : "") +
+        " · 海螺插件" + (p.author ? " · " + esc(p.author) : "") + port,
       secret: launch ? launch.secret || launch.token || "" : "",
       secretLabel: launch && launch.secret ? "密码" : "口令",
       accent: accentOf(p.id),
@@ -1718,6 +1782,38 @@ async function loadPlugins() {
       } catch (e) { toast("操作失败：" + e.message); btn.disabled = false; }
     };
   });
+
+  const plugCheck = $("plugCheckBtn");
+  if (plugCheck) {
+    plugCheck.onclick = async () => {
+      plugCheck.disabled = true;
+      const old = plugCheck.textContent;
+      plugCheck.textContent = "检查中…";
+      try {
+        const r = await api("/api/plugins/check-updates", { method: "POST", body: JSON.stringify({ force: true }) });
+        const items = r.items || {};
+        const hit = Object.values(items).filter((x) => x && x.has_update);
+        const bad = Object.values(items).filter((x) => x && x.error);
+        if (!Object.keys(items).length) {
+          toast("没有插件声明版本来源（metadata.json 里加 source）");
+        } else if (hit.length) {
+          showUpdateDialog(hit.map((x) => ({
+            id: x.repo, name: x.repo.split("/").pop(), current: x.current, latest: x.latest,
+            page: (all.find((p) => p.update && p.update.repo === x.repo) || {}).page || "",
+            launch: (all.find((p) => p.update && p.update.repo === x.repo) || {}).launch,
+          })));
+        } else {
+          toast("都是最新" + (bad.length ? "；" + bad.length + " 个查不到" : ""));
+        }
+        await loadPlugins();
+      } catch (e) {
+        toast("检查失败：" + e.message);
+      } finally {
+        plugCheck.disabled = false;
+        plugCheck.textContent = old;
+      }
+    };
+  }
 
   const stopAll = $("stopAllBtn");
   if (stopAll) {

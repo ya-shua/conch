@@ -12,7 +12,7 @@
   "version": "0.1.0",
   "description": "一个自己就跑起来的小工具，带网页界面。",
   "launch": {
-    "cmd": "D:\\Tools\\seek\\seek.exe",
+    "cmd": "<安装路径>\\seek.exe",
     "args": ["--serve", "--port", "6123"],
     "port": 6123
   }

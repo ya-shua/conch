@@ -280,6 +280,17 @@ async def api_plugins(request: web.Request) -> web.Response:
         up = _port_open(port) if port else True
         item["service_up"] = up
         item["running"] = item.get("status") == "enabled" and up
+    # 插件有没有新版：只读缓存（不联网），点「检查更新」才真正去查
+    try:
+        from core import updater as _upd
+        _updates = _upd.read_plugin_updates().get("items") or {}
+    except Exception:
+        _updates = {}
+    for item in items:
+        info = _updates.get(item.get("id"))
+        if info:
+            item["update"] = info
+
     return web.json_response({"ok": True, "plugins": items})
 
 
@@ -325,6 +336,21 @@ def _coerce(field: dict, value):
     if isinstance(limit, int) and limit > 0:
         text = text[:limit]
     return text
+
+
+async def api_plugins_check_updates(request: web.Request) -> web.Response:
+    """真正去 GitHub 查一遍（插件自己的页面负责更新，这里只回报有没有新版）。"""
+    from core import updater
+
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    force = bool((body or {}).get("force"))
+    loader = request.app["state"]["loader"]
+    metas = getattr(loader, "metas", None) or {}
+    items = await updater.check_plugins(metas, force=force)
+    return web.json_response({"ok": True, "items": items, "checked": len(items)})
 
 
 async def api_plugin_config(request: web.Request) -> web.Response:
@@ -2000,6 +2026,7 @@ def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Applica
     app.router.add_get("/ping.js", ping_js)
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/plugins", api_plugins)
+    app.router.add_post("/api/plugins/check-updates", api_plugins_check_updates)
     app.router.add_get("/api/plugins/{pid}/config", api_plugin_config)
     app.router.add_put("/api/plugins/{pid}/config", api_plugin_config)
     app.router.add_post("/api/plugins/{pid}/toggle", api_toggle)

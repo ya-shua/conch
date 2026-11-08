@@ -30,6 +30,7 @@ class PluginMeta:
     author: str = ""
     description: str = ""
     builtin: bool = False
+    source: object = ""  # "owner/repo" 或 {"repo": .., "check": "release"|"tag"}
     path: Path = Path(".")
     config: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -42,6 +43,7 @@ class PluginMeta:
             "author": self.author,
             "description": self.description,
             "builtin": self.builtin,
+            "source": self.source,
             "path": str(self.path),
         }
 
@@ -61,6 +63,7 @@ def read_meta(folder: Path) -> PluginMeta:
         author=str(data.get("author") or ""),
         description=str(data.get("description") or ""),
         builtin=bool(data.get("builtin", False)),
+        source=data.get("source") or "",
         path=folder,
         raw=data,
     )
