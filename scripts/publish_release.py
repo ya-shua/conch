@@ -30,6 +30,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 API = "https://api.github.com"
+
+# 提交/标签身份：仓库是公开的，别把 GitHub 账号上的真名和邮箱带上去
+AUTHOR = {"name": "管理员", "email": "noreply@example.com"}
 REPO = os.environ.get("GITHUB_REPO", "ya-shua/conch")
 DESC = "海螺工作台：一个 QQ 上的她，插件化、自带控制台"
 
@@ -187,7 +190,8 @@ def main() -> int:
 
     status, commit = call(
         "POST", f"{base}/git/commits",
-        {"message": f"release: {tag}", "tree": tree["sha"], "parents": [parent] if parent else []},
+        {"message": f"release: {tag}", "tree": tree["sha"], "parents": [parent] if parent else [],
+         "author": AUTHOR, "committer": AUTHOR},
     )
     if status != 201:
         print("commit 失败:", status, commit.get("message"))
@@ -199,7 +203,7 @@ def main() -> int:
 
     status, tagobj = call(
         "POST", f"{base}/git/tags",
-        {"tag": tag, "message": f"海螺 {tag}", "object": sha, "type": "commit"},
+        {"tag": tag, "message": f"海螺 {tag}", "object": sha, "type": "commit", "tagger": AUTHOR},
     )
     if status == 201:
         st, _ = call("POST", f"{base}/git/refs", {"ref": f"refs/tags/{tag}", "sha": tagobj["sha"]})

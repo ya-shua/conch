@@ -607,6 +607,7 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
 
     <div class="grp">聊天行为</div>
     <button class="nav" data-view="persona"><i>◉</i>人格与角色</button>
+        <button class="nav" data-view="cards"><i>▣</i>称呼卡</button>
     <button class="nav" data-view="strategy"><i>◈</i>发言策略</button>
     <button class="nav" data-view="access"><i>⊙</i>访问与安全</button>
     <button class="nav" data-view="lexicon"><i>▤</i>词库</button>
@@ -684,6 +685,18 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
           <section class="sec">
             <div class="sec-head"><h2>活动日志</h2><span class="note">最近 100 条</span></div>
             <div class="sec-body"><pre class="log" id="activityLog" style="height:200px">（空）</pre></div>
+          </section>
+
+          <section class="sec">
+            <div class="sec-head"><h2>版本与更新</h2><span class="note" id="verState">—</span></div>
+            <div class="sec-body">
+              <div class="line">
+                <div><div class="t">当前版本</div><div class="d" id="verCurrent">—</div></div>
+                <div class="c"><button id="verCheck">检查更新</button></div>
+              </div>
+              <div class="hint">有新版本时，左下角会出现角标，点一下就更新。</div>
+              <div class="foot"><button class="primary" id="verApply" hidden>一键更新</button></div>
+            </div>
           </section>
         </div>
 
@@ -912,27 +925,12 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
                 </div>
 
                 <div class="wl-row">
-                  <div class="wl-t"><b>管理员</b><span>私聊始终放行，可以下管理命令；可以有好几个（她按 #QQ号 分清是谁）</span></div>
+                  <div class="wl-t"><b>管理员</b><span>谁是自己人、怎么称呼，都搬到了左边的「称呼卡」页</span></div>
                   <div class="wl-f">
-                    <div>
-                      <label for="ownerQQ">管理员 QQ（多个用逗号隔开）</label>
-                      <input type="text" id="ownerQQ" placeholder="123456，600000">
-                    </div>
                     <div>
                       <label>白名单为空时放行全部</label>
                       <button class="sw" id="allowAllSwitch" aria-label="白名单为空时放行全部"></button>
                       <div class="hint" style="margin-top:6px">不建议开。开了等于把账号交给模型。</div>
-                    </div>
-                  </div>
-                </div>
-
-              <div class="wl-row">
-                  <div class="wl-t"><b>称呼卡</b><span>一卡一人，可挂多个 QQ 号（单人多号）；称呼只是「希望你这么叫」，真正能用的词还是人设里那套</span></div>
-                  <div class="wl-f" style="display:block">
-                    <div id="adminCards"></div>
-                    <div style="margin-top:10px">
-                      <button class="ghost sm" id="addAdminCard">+ 加一张卡</button>
-                      <span class="hint" style="margin-left:8px">不建卡也行，那就用上面那栏「管理员 QQ」。</span>
                     </div>
                   </div>
                 </div>
@@ -972,15 +970,23 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
             </div>
           </section>
 
+        </div>
+
+        <div class="page" data-page="cards">
           <section class="sec">
-            <div class="sec-head"><h2>版本与更新</h2><span class="note" id="verState">—</span></div>
+            <div class="sec-head"><h2>称呼卡</h2><span class="note">一卡一人，可挂多个 QQ 号</span></div>
             <div class="sec-body">
-              <div class="line">
-                <div><div class="t">当前版本</div><div class="d" id="verCurrent">—</div></div>
-                <div class="c"><button id="verCheck">检查更新</button></div>
+              <div class="field">
+                <label for="ownerQQ">管理员 QQ（只有一个人、不建卡时用）</label>
+                <input type="text" id="ownerQQ" placeholder="123456，600000">
+                <div class="hint">号码框一次粘一串：逗号、空格、换行都当分隔。建了卡之后这栏可以空着。</div>
               </div>
-              <div class="hint" id="verNotes" style="white-space:pre-wrap"></div>
-              <div class="foot"><button class="primary" id="verApply" hidden>一键更新</button></div>
+              <div id="adminCards"></div>
+              <div style="margin-top:10px">
+                <button class="ghost sm" id="addAdminCard">+ 加一张卡</button>
+                <span class="hint" style="margin-left:8px">一张卡 = 一个人；同一个人的几个号写在一张卡里。</span>
+              </div>
+              <div class="foot"><button class="primary" id="saveCardsBtn">保存</button></div>
             </div>
           </section>
         </div>
@@ -1205,6 +1211,7 @@ const VIEWS = {
   plugins: ["插件", "装了什么、开没开。放一个文件夹进 plugins/ 就会出现在这里。"],
   persona: ["人格与角色", "她是谁、什么语气。改完保存，下一条消息生效。"],
   strategy: ["发言策略", "什么时候说话、说多少。"],
+  cards: ["称呼卡", "谁是自己人、怎么称呼；一个人可以挂几个号。"],
   access: ["访问与安全", "谁能触发她，谁能管她。"],
   lexicon: ["词库", "群里的黑话、触发关键词、你对她的称呼。"],
   usage: ["花费", "谁在花 token，花在哪儿。"],
@@ -2270,6 +2277,17 @@ async function loadAccess() {
   renderAdminCards();
 }
 
+async function saveCards() {
+  try {
+    const cards = (accessState.admins || []).filter((c) => (c.ids || []).length);
+    const owner = (($("ownerQQ") && $("ownerQQ").value) || "").trim();
+    const payload = cards.length ? { admins: cards } : { owner_qq: owner };
+    await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
+    toast("已保存");
+    await loadAccess();
+  } catch (e) { toast("保存失败：" + e.message); }
+}
+
 async function saveAccess() {
   try {
     const payload = {
@@ -3076,6 +3094,7 @@ async function refresh() {
     else if (currentView === "plugins") await loadPlugins();
     else if (currentView === "persona") await loadPersona();
     else if (currentView === "strategy") await loadStrategy();
+    else if (currentView === "cards") await loadAccess();
     else if (currentView === "access") { await loadAccess(); await loadAuthState(); }
     else if (currentView === "lexicon") await loadLexicon();
 else if (currentView === "stickers") await loadStickers();
@@ -3105,7 +3124,10 @@ $("themeToggle").onclick = () => {
 };
 $("refreshAll").onclick = () => { refreshCurrent(); toast("已刷新"); };
 
+if ($("notesClose")) $("notesClose").onclick = () => $("notesMask").classList.remove("on");
+if ($("notesMask")) $("notesMask").onclick = (e) => { if (e.target === $("notesMask")) $("notesMask").classList.remove("on"); };
 $("saveAccessBtn").onclick = saveAccess;
+if ($("saveCardsBtn")) $("saveCardsBtn").onclick = saveCards;
 $("saveStrategyBtn").onclick = saveStrategy;
 $("saveRoleBtn").onclick = saveRole;
 const _fabRefresh = $("fabRefresh");
@@ -3563,6 +3585,12 @@ async function runUpdate() {
   }
 }
 
+function showNotes(title, text) {
+  $("notesTitle").textContent = title || "这次改了什么";
+  $("notesBody").textContent = text || "这次更新没写说明。";
+  $("notesMask").classList.add("on");
+}
+
 function initUpdBar() {
   const bar = $("updBar");
   if (!bar) return;
@@ -3579,10 +3607,9 @@ function initUpdBar() {
     updDismissed = (updInfo && updInfo.latest) || "";
     bar.hidden = true;
   };
-  if (notes) notes.onclick = async (e) => {
+  if (notes) notes.onclick = (e) => {
     e.stopPropagation();
-    const body = (updInfo && updInfo.notes) || "这次更新没写说明。";
-    await ask({ title: "这次改了什么", sub: body, kind: "confirm", ok: "知道了", cancel: "关闭" });
+    showNotes("有新版本 " + ((updInfo && updInfo.latest) || ""), (updInfo && updInfo.notes) || "这次更新没写说明。");
   };
 }
 
@@ -3696,6 +3723,16 @@ setInterval(function () {
     </div>
   </div>
 </div>
+<div class="mask" id="notesMask">
+  <div class="sheet" style="width:min(560px,92vw);max-height:66vh">
+    <div class="sheet-h"><h3 id="notesTitle">这次改了什么</h3></div>
+    <div class="sheet-b" style="gap:8px">
+      <div id="notesBody" style="white-space:pre-wrap;line-height:1.75;font-size:12.5px;color:var(--text-2)"></div>
+    </div>
+    <div class="sheet-f"><button class="primary sm" id="notesClose">知道了</button></div>
+  </div>
+</div>
+
 <div class="mask" id="plugMask">
   <div class="sheet" role="dialog" aria-modal="true">
     <div class="sheet-h"><h3 id="sheetTitle">设置</h3><span class="sub" id="sheetSub"></span></div>
