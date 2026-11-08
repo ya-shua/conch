@@ -134,9 +134,17 @@ code{font-family:Consolas,"SFMono-Regular",monospace;font-size:.92em;color:var(-
 .stcfg .fu{font-size:12px;color:var(--muted)}
 .stcfg .fh{font-size:12px;color:var(--muted);margin:2px 0 10px}
 .stcfg .fbtns{display:flex;gap:8px;margin-top:12px}
-#updBar{display:flex;align-items:center;gap:10px;margin:0 0 14px;padding:9px 12px 9px 14px;
+#updBar{position:fixed;left:16px;bottom:16px;z-index:260;display:flex;align-items:center;gap:10px;
+  padding:9px 12px 9px 14px;max-width:min(460px,calc(100vw - 32px));cursor:pointer;
   border-radius:12px;background:color-mix(in srgb,var(--acc) 11%,var(--surface));
-  border:1px solid color-mix(in srgb,var(--acc) 34%,var(--border));box-shadow:var(--sh)}
+  border:1px solid color-mix(in srgb,var(--acc) 34%,var(--border));
+  box-shadow:0 10px 30px rgba(0,0,0,.35);animation:updIn .22s ease-out}
+#updBar[hidden]{display:none}
+#updBar:hover{border-color:color-mix(in srgb,var(--acc) 55%,var(--border))}
+#updBar .upd-ic{width:26px;height:26px;flex:0 0 auto;display:grid;place-items:center;border-radius:8px;
+  background:var(--acc);color:#fff;font-size:14px;font-weight:700}
+@keyframes updIn{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+@media (max-width:520px){#updBar{left:10px;right:10px;bottom:10px;max-width:none}#updBar .upd-txt span{display:none}}
 #updBar .upd-ic{width:26px;height:26px;flex:0 0 auto;display:grid;place-items:center;border-radius:8px;
   background:var(--acc);color:#fff;font-size:14px;font-weight:700}
 #updBar .upd-txt{flex:1;min-width:0;display:flex;flex-direction:column;gap:1px}
@@ -636,14 +644,6 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
   <button id="deadRetry">重试</button>
 </div>
 <div id="alertBox" class="alert" hidden></div>
-        <div id="updBar" hidden>
-          <span class="upd-ic">↑</span>
-          <div class="upd-txt"><b id="updTitle">有新版本</b><span id="updSub"></span></div>
-          <button class="primary sm" id="updGo">一键更新</button>
-          <button class="sm" id="updNotes">看看改了什么</button>
-          <button class="ibtn" id="updLater" title="先不更新">×</button>
-        </div>
-
         <div class="page" data-page="overview">
           <section class="sec" id="approveCard" hidden>
             <div class="sec-head"><h2>待审批</h2><span class="note">命中关键词，等你点头</span></div>
@@ -3481,7 +3481,7 @@ function showUpd(d) {
     return;
   }
   $("updTitle").textContent = "有新版本 " + d.latest;
-  $("updSub").textContent = "现在是 v" + (d.current || "?") + (d.notes ? " · " + String(d.notes).split("\n")[0] : "");
+  $("updSub").textContent = "现在是 v" + (d.current || "?") + " · 点一下更新";
   bar.hidden = false;
 }
 
@@ -3564,7 +3564,11 @@ async function runUpdate() {
   }
 }
 
-if ($("updGo")) $("updGo").onclick = runUpdate;
+if ($("updGo")) $("updGo").onclick = (e) => { e.stopPropagation(); runUpdate(); };
+if ($("updBar")) $("updBar").onclick = (e) => {
+  if (e.target.closest("button")) return;
+  runUpdate();
+};
 if ($("updLater")) $("updLater").onclick = () => { updDismissed = (updInfo && updInfo.latest) || ""; $("updBar").hidden = true; };
 if ($("updNotes")) $("updNotes").onclick = async () => {
   const notes = (updInfo && updInfo.notes) || "这次更新没写说明。";
@@ -3683,6 +3687,13 @@ setInterval(function () {
       <button class="primary sm" id="sheetSave">保存</button>
     </div>
   </div>
+</div>
+<div id="updBar" hidden title="点一下一键更新">
+  <span class="upd-ic">↑</span>
+  <div class="upd-txt"><b id="updTitle">有新版本</b><span id="updSub"></span></div>
+  <button class="primary sm" id="updGo">一键更新</button>
+  <button class="sm" id="updNotes">看看改了什么</button>
+  <button class="ibtn" id="updLater" title="先不更新">×</button>
 </div>
 </body>
 </html>
