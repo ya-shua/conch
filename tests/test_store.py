@@ -1,4 +1,4 @@
-from qqbridge.core.store import Store
+from core.store import Store
 
 
 def make_store(tmp_path) -> Store:

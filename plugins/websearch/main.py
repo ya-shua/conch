@@ -9,7 +9,7 @@ from __future__ import annotations
 import asyncio
 import datetime as dt
 
-from qqbridge.core import websearch
+from core import websearch
 
 OWNER = "websearch"
 LEARN_CAP = 20  # 每天最多自动学多少个词

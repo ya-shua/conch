@@ -2,7 +2,7 @@ import json
 
 import pytest
 
-from qqbridge.core.config import ConfigError, load_config, norm_id
+from core.config import ConfigError, load_config, norm_id
 
 
 def _write(tmp_path, data):
@@ -35,7 +35,7 @@ def test_relative_dirs_resolve_to_config_folder(tmp_path):
     p = _write(tmp_path, {"plugins_dir": "plugins", "data_dir": "data"})
     cfg = load_config(p)
     assert cfg.plugins_dir == str((tmp_path / "plugins").resolve())
-    assert cfg.db_path == tmp_path / "data" / "qqbridge.db"
+    assert cfg.db_path == tmp_path / "data" / "海螺.db"
 
 
 def test_allow_ids_are_normalized(tmp_path):

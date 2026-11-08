@@ -34,13 +34,13 @@ _GIT_CANDIDATES = (
 
 
 def project_root() -> Path:
-    """仓库根就是 qqbridge 自己（core/ 的上一级）。"""
+    """仓库根就是海螺自己（core/ 的上一级）。"""
     return Path(__file__).resolve().parent.parent
 
 
 def current_version() -> str:
     try:
-        from qqbridge import __version__
+        from core.version import __version__
 
         return str(__version__)
     except Exception:

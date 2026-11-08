@@ -29,6 +29,7 @@ import os
 import socket
 import subprocess
 import sys
+import time
 from ctypes import wintypes
 from pathlib import Path
 from typing import Any
@@ -288,11 +289,38 @@ def ensure_password(
     }
 
 
+def _location_tokens(cwd: Path) -> list[str]:
+    """有的插件把数据目录搬走了（data-location.json），令牌跟着搬走。
+
+    环形的心就是这样：插件目录里 data/token.txt 是搬家前的旧令牌，
+    真正在用的是搬家后的 dataDir/token.txt —— 不跟着走就会显示错密码。
+    """
+    found: list[str] = []
+    for name in ("data-location.json", "location.json"):
+        fp = cwd / name
+        if not fp.is_file():
+            continue
+        try:
+            data = json.loads(fp.read_text(encoding="utf-8-sig"))
+        except (OSError, ValueError):
+            continue
+        data_dir = str(data.get("dataDir") or "").strip()
+        if not data_dir:
+            continue
+        base = Path(data_dir)
+        if not base.is_absolute():
+            base = cwd / data_dir
+        found.append(str(base / "token.txt"))
+        found.append(str(base / "token"))
+    return found
+
+
 def _discover_token(item: dict[str, Any]) -> str:
-    """令牌：先按声明的文件找，再按常见位置碰运气。"""
+    """令牌：先按声明的文件找，再看有没有搬过家，最后按常见位置碰运气。"""
     cwd = Path(str(item.get("cwd") or "."))
     declared = item.get("url_token_file")
     candidates = [str(declared)] if declared else []
+    candidates += _location_tokens(cwd)
     candidates += list(TOKEN_FILES)
     for rel in candidates:
         try:
@@ -456,10 +484,60 @@ def _url_with_token(item: dict[str, Any], port: Any) -> str:
     return url
 
 
+_ALIVE_CACHE: dict[str, tuple[float, list[int]]] = {}
+
+
+def pids_under(cwd: str) -> list[int]:
+    """这个目录下起来的进程（按可执行文件路径认）。
+
+    有的服务（微光域）没有固定端口、也不是从海螺面板启的，PID 档案里没有它，
+    光看端口就会把「明明在跑」算成「已关闭」。用 exe 路径兜一下。
+    """
+    root = str(cwd or "").strip().rstrip("\\/").lower()
+    if not root:
+        return []
+    now = time.time()
+    hit = _ALIVE_CACHE.get(root)
+    if hit and now - hit[0] < 3.0:          # 面板一次加载会问好几遍，别重复查
+        return list(hit[1])
+    out: list[int] = []
+    try:
+        raw = subprocess.run(
+            ["powershell", "-NoProfile", "-NonInteractive", "-Command",
+             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+             "Get-CimInstance Win32_Process | Select-Object ProcessId,ExecutablePath "
+             "| ConvertTo-Json -Compress"],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=12,
+            creationflags=0x08000000,
+        ).stdout.strip()
+        rows = json.loads(raw) if raw else []
+    except Exception:
+        rows = []
+    if isinstance(rows, dict):
+        rows = [rows]
+    for row in rows:
+        exe = str(row.get("ExecutablePath") or "")
+        pid = int(row.get("ProcessId") or 0)
+        if not exe or not pid:
+            continue
+        path = exe.lower().replace("/", "\\")
+        if path == root or path.startswith(root + "\\"):
+            out.append(pid)
+    _ALIVE_CACHE[root] = (now, out)
+    return out
+
+
 def status(item: dict[str, Any]) -> dict[str, Any]:
     port = item.get("port")
     pid = _tracked_pid(str(item["id"]))
     by_port = port_open(int(port) if port else None)
+    found = pids_under(str(item.get("cwd") or "")) if not (pid or by_port) else []
+    if not pid and found:
+        pid = found[0]
     by_process = bool(pid)
     return {
         "id": item["id"],

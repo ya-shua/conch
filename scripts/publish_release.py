@@ -12,7 +12,7 @@
     set GITHUB_TOKEN=...        （或把 40 位 PAT 放在 %USERPROFILE%\\Desktop\\token.txt）
     python scripts/publish_release.py
 
-版本号取自 qqbridge/__init__.py 的 __version__，tag 是 v<版本>。
+版本号取自 core/version.py 的 __version__，tag 是 v<版本>。
 发版前请先跑隐私门禁：python scripts/privacy_gate.py --all
 """
 

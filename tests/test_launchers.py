@@ -4,7 +4,7 @@ import json
 
 import pytest
 
-from qqbridge.core import launchers
+from core import launchers
 
 
 @pytest.fixture(autouse=True)

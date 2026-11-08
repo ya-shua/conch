@@ -689,6 +689,23 @@ class Store:
             self.conn.commit()
             return cur.rowcount > 0
 
+    def checkpoint(self) -> None:
+        """把 WAL 合回主库。
+
+        WAL 模式下新记录先进 `-wal` 文件，主库要等 checkpoint 才更新。
+        不主动合的话，直接打开（或拷走）`海螺.db` 的人看到的是旧数据 ——
+        「记录没进去」多半就是这么来的。
+        """
+        with self._lock:
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
+            except sqlite3.Error:
+                pass
+
     def close(self) -> None:
         with self._lock:
+            try:
+                self.conn.execute("PRAGMA wal_checkpoint(TRUNCATE)")
+            except sqlite3.Error:
+                pass
             self.conn.close()

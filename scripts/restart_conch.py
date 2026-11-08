@@ -17,10 +17,10 @@ ROOT = Path(__file__).resolve().parent.parent
 
 KILL_PS = (
     "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
-    "Where-Object { $_.CommandLine -match 'qqbridge.main' } | "
+    "Where-Object { $_.CommandLine -match 'main\\.py --config' } | "
     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }; "
     "Get-CimInstance Win32_Process -Filter \"Name='python.exe'\" | "
-    "Where-Object { $_.CommandLine -match 'qqbridge.main' } | "
+    "Where-Object { $_.CommandLine -match 'main\\.py --config' } | "
     "ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }"
 )
 

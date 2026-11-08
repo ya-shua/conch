@@ -1,6 +1,6 @@
 import datetime as dt
 
-from qqbridge.core.pricing import estimate_cost, is_peak
+from core.pricing import estimate_cost, is_peak
 
 TZ = dt.timezone(dt.timedelta(hours=8))
 

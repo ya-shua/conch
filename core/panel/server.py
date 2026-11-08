@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import secrets
 import shutil
 import stat
@@ -19,9 +20,15 @@ from typing import Any
 import aiohttp
 from aiohttp import web
 
-from ... import __version__ as CONCH_VERSION
+from core.version import __version__ as CONCH_VERSION
 from .. import log
-from ..config import DEFAULT_STRATEGY
+from ..config import (
+    Admin,
+    ConfigError,
+    DEFAULT_STRATEGY,
+    owner_ids_of,
+    parse_admins,
+)
 from .. import websearch
 
 log_ = log.get("panel")
@@ -158,7 +165,7 @@ async def index(_request: web.Request) -> web.Response:
 
 def _integrity_level() -> str:
     try:
-        from qqbridge.core import integrity as _ig
+        from core import integrity as _ig
 
         return _ig.current()
     except Exception:
@@ -203,8 +210,42 @@ def _display_names(app) -> dict[str, str]:
     return {str(k): str(v) for k, v in got.items() if str(v).strip()}
 
 
+def _port_open(port: int) -> bool:
+    import socket
+
+    try:
+        with socket.create_connection(("127.0.0.1", int(port)), timeout=0.25):
+            return True
+    except OSError:
+        return False
+
+
+def _meta_port(meta: dict[str, Any], page: str = "") -> int:
+    """插件自己的端口：先看 metadata.port，再看 launch.port，最后从 page 地址里抠。"""
+    raw = meta.get("port")
+    if raw:
+        try:
+            return int(raw)
+        except (TypeError, ValueError):
+            pass
+    launch = meta.get("launch") or {}
+    if isinstance(launch, dict) and launch.get("port"):
+        try:
+            return int(launch["port"])
+        except (TypeError, ValueError):
+            pass
+    if page:
+        try:
+            from urllib.parse import urlparse
+
+            return int(urlparse(page).port or 0)
+        except (TypeError, ValueError):
+            return 0
+    return 0
+
+
 def _plugin_meta(path: str) -> dict[str, Any]:
-    """读插件目录里 metadata.json 的可选字段（页面地址、是否有设置）。"""
+    """读插件目录里 metadata.json 的可选字段（页面地址、端口、是否有设置）。"""
     try:
         meta = json.loads((Path(path) / "metadata.json").read_text(encoding="utf-8-sig"))
     except Exception:
@@ -212,8 +253,12 @@ def _plugin_meta(path: str) -> dict[str, Any]:
     extra: dict[str, Any] = {}
     if meta.get("name_en"):
         extra["name_en"] = str(meta["name_en"])
-    if meta.get("page"):
-        extra["page"] = str(meta["page"])
+    page = str(meta.get("page") or ((meta.get("launch") or {}).get("url") if isinstance(meta.get("launch"), dict) else "") or "")
+    if page:
+        extra["page"] = page
+    port = _meta_port(meta, page)
+    if port:
+        extra["port"] = port
     schema = meta.get("settings")
     if isinstance(schema, list) and schema:
         extra["settings"] = True
@@ -230,6 +275,11 @@ async def api_plugins(request: web.Request) -> web.Response:
     for item in items:
         item.update(_plugin_meta(str(item.get("path") or "")))
         item["alias"] = names.get(str(item.get("id")), "")
+        # 统一口径：启用 + 声明的端口真的在听 = 运行中，其余一律已关闭
+        port = int(item.get("port") or 0)
+        up = _port_open(port) if port else True
+        item["service_up"] = up
+        item["running"] = item.get("status") == "enabled" and up
     return web.json_response({"ok": True, "plugins": items})
 
 
@@ -603,8 +653,16 @@ async def api_settings_get(request: web.Request) -> web.Response:
     return web.json_response(
         {
             "ok": True,
-            "owner_qq": cfg.owner_qq,
+            "owner_qq": "，".join(getattr(cfg, "owner_ids", None) or ([cfg.owner_qq] if cfg.owner_qq else [])),
+            "admins": [card.to_dict() for card in (getattr(cfg, "admins", None) or [])],
             "merge_window_ms": cfg.merge_window_ms,
+            "reply_gap_base_ms": cfg.reply_gap_base_ms,
+            "reply_gap_max_ms": cfg.reply_gap_max_ms,
+            "reply_max_lines": cfg.reply_max_lines,
+            "catch_up_enabled": cfg.catch_up_enabled,
+            "catch_up_minutes": cfg.catch_up_minutes,
+            "closing_enabled": cfg.closing_enabled,
+            "closing_words": cfg.closing_words,
             "allow": {
                 "groups": cfg.allow.groups,
                 "private": cfg.allow.private,
@@ -797,7 +855,11 @@ def _mask_key(key: str) -> str:
 
 
 def _save_model_keys(request: web.Request, keys: list[dict]) -> None:
-    """写回 config.json（model.keys），顺手让 model.api_key 跟第一把保持一致。"""
+    """写回 config.json（model.keys），顺手让 model.api_key 跟第一把保持一致。
+
+    一把都不剩的时候，`api_key` 也得清掉 —— 以前留着旧的，界面上显示「没有 Key」，
+    实际调模型还在用那把删掉的（看着就是「删不掉」）。
+    """
     cfg = request.app["cfg"]
     raw = _raw_config(request)
     model_raw = raw.setdefault("model", {})
@@ -809,9 +871,10 @@ def _save_model_keys(request: web.Request, keys: list[dict]) -> None:
     model_raw["keys"] = clean
     if clean:
         model_raw["api_key"] = clean[0]["key"]
+    else:
+        model_raw.pop("api_key", None)
     cfg.model.keys = clean
-    if clean:
-        cfg.model.api_key = clean[0]["key"]
+    cfg.model.api_key = clean[0]["key"] if clean else ""
     Path(request.app["cfg_path"]).write_text(
         json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
     )
@@ -915,11 +978,28 @@ async def api_models_list(request: web.Request) -> web.Response:
             body = {}
 
     base_url = str(body.get("base_url") or cfg.model.base_url or "").strip().rstrip("/")
-    api_key = str(body.get("api_key") or cfg.model.api_key or "").strip()
+    api_key = str(body.get("api_key") or "").strip()
+    used_label = "手填的 Key"
+    used_index = -1
+    if not api_key:
+        # 没手填就用列表里的：`index` 指定第几把，不给就用当前在用的那把
+        keys = list(cfg.model.keys or [])
+        try:
+            want = int(body.get("index", -1))
+        except (TypeError, ValueError):
+            want = -1
+        if keys and 0 <= want < len(keys):
+            api_key = str(keys[want].get("key") or "").strip()
+            used_label = str(keys[want].get("label") or f"第 {want + 1} 把")
+            used_index = want
+        elif keys:
+            api_key = str(cfg.model.api_key or keys[0].get("key") or "").strip()
+            used_label = str(keys[0].get("label") or "第 1 把")
+            used_index = 0
     if not base_url:
         return web.json_response({"error": "还没填接口地址"}, status=400)
     if not api_key:
-        return web.json_response({"error": "还没填 API Key"}, status=400)
+        return web.json_response({"error": "还没有可用的 Key"}, status=400)
 
     from aiohttp import ClientSession, ClientTimeout
 
@@ -950,7 +1030,9 @@ async def api_models_list(request: web.Request) -> web.Response:
         if mid:
             ids.append(mid)
     ids.sort()
-    return web.json_response({"ok": True, "models": ids, "count": len(ids)})
+    return web.json_response(
+        {"ok": True, "models": ids, "count": len(ids), "key_index": used_index, "key_label": used_label}
+    )
 
 
 async def api_settings_put(request: web.Request) -> web.Response:
@@ -960,9 +1042,33 @@ async def api_settings_put(request: web.Request) -> web.Response:
     raw = _raw_config(request)
     changed: list[str] = []
 
-    if "owner_qq" in body:
-        cfg.owner_qq = str(body["owner_qq"]).strip()
-        raw["owner_qq"] = cfg.owner_qq
+    if "admins" in body:
+        # 称呼卡：校验不过就整批拒绝（别存一半）
+        try:
+            cards = parse_admins(body["admins"])
+        except ConfigError as exc:
+            raise web.HTTPBadRequest(text=json.dumps({"error": str(exc)}, ensure_ascii=False))
+        raw["admins"] = [card.to_dict() for card in cards]
+        cfg.admins = cards
+        ids: list[str] = []
+        for card in cards:
+            for uid in card.ids:
+                if uid not in ids:
+                    ids.append(uid)
+        cfg.owner_ids = ids
+        cfg.owner_qq = ids[0] if ids else ""
+        # 老字段只留第一个号：它只是「主管理员」，全部号在 admins 里，别存成 "a，b" 被当成一个号
+        raw["owner_qq"] = ids[0] if ids else ""
+        changed.append("admins")
+
+    if "owner_qq" in body and "admins" not in body:
+        # 管理员可以填多个（逗号隔开）：owner_qq 存第一个，owner_ids 存全部
+        ids = owner_ids_of(body["owner_qq"])
+        cfg.owner_ids = ids
+        cfg.owner_qq = ids[0] if ids else ""
+        raw["owner_qq"] = ids[0] if ids else ""
+        cfg.admins = [Admin(id="a1", name="管理员", ids=list(ids))] if ids else []
+        raw["admins"] = [card.to_dict() for card in cfg.admins]
         changed.append("owner_qq")
 
     if "merge_window_ms" in body:
@@ -970,6 +1076,54 @@ async def api_settings_put(request: web.Request) -> web.Response:
         cfg.merge_window_ms = value
         raw["merge_window_ms"] = value
         changed.append("merge_window_ms")
+
+    # 先校验再落值：直接改完再抛异常，内存里的值会被改脏（面板一刷新就看到没保存的数）
+    want_base = max(0, int(body["reply_gap_base_ms"])) if "reply_gap_base_ms" in body else None
+    want_max = max(0, int(body["reply_gap_max_ms"])) if "reply_gap_max_ms" in body else None
+    if want_base is not None or want_max is not None:
+        base = cfg.reply_gap_base_ms if want_base is None else want_base
+        cap = cfg.reply_gap_max_ms if want_max is None else want_max
+        if cap and cap < base:
+            raise web.HTTPBadRequest(text='{"error": "句间停顿的上限不能比基础值小"}')
+        if want_base is not None:
+            cfg.reply_gap_base_ms = want_base
+            raw["reply_gap_base_ms"] = want_base
+            changed.append("reply_gap_base_ms")
+        if want_max is not None:
+            cfg.reply_gap_max_ms = want_max
+            raw["reply_gap_max_ms"] = want_max
+            changed.append("reply_gap_max_ms")
+
+    if "reply_max_lines" in body:
+        value = max(0, int(body["reply_max_lines"]))
+        cfg.reply_max_lines = value
+        raw["reply_max_lines"] = value
+        changed.append("reply_max_lines")
+
+    if "catch_up_enabled" in body:
+        cfg.catch_up_enabled = bool(body["catch_up_enabled"])
+        raw["catch_up_enabled"] = cfg.catch_up_enabled
+        changed.append("catch_up_enabled")
+
+    if "catch_up_minutes" in body:
+        value = max(1, int(body["catch_up_minutes"]))
+        cfg.catch_up_minutes = value
+        raw["catch_up_minutes"] = value
+        changed.append("catch_up_minutes")
+
+    if "closing_enabled" in body:
+        cfg.closing_enabled = bool(body["closing_enabled"])
+        raw["closing_enabled"] = cfg.closing_enabled
+        changed.append("closing_enabled")
+
+    if "closing_words" in body:
+        words = body["closing_words"]
+        if isinstance(words, str):
+            words = re.split(r"[,，;；\s]+", words)
+        values = [str(w).strip() for w in (words or []) if str(w).strip()]
+        cfg.closing_words = values
+        raw["closing_words"] = values
+        changed.append("closing_words")
 
     if "allow" in body and isinstance(body["allow"], dict):
         allow = body["allow"]
@@ -1459,7 +1613,13 @@ async def api_approval_decide(request: web.Request) -> web.Response:
             from ..message import Segment
 
             try:
-                await onebot.send(item["conv_id"], [Segment("text", {"text": reply})])
+                import asyncio as _asyncio
+
+                parts = [ln.strip() for ln in re.split(r"\n+", reply) if ln.strip()] or [reply]
+                for _i, _part in enumerate(parts):
+                    if _i:
+                        await _asyncio.sleep(min(0.30 + len(_part) * 0.012, 1.10))
+                    await onebot.send(item["conv_id"], [Segment("text", {"text": _part})])
                 store.message_add(item["conv_id"], "out", reply, plugin_id="qq_bridge")
             except Exception as exc:
                 log_.error("审批通过但发送失败：%s", exc)

@@ -18,6 +18,18 @@ def split_conv(conv_id: str) -> tuple[str, str]:
     return kind, norm_id(target)
 
 
+def owner_set(cfg: Config) -> set[str]:
+    """所有管理员 QQ（可能有多个号、多张称呼卡）。老配置只有 owner_qq 也照样算。"""
+    ids: set[str] = set()
+    for card in getattr(cfg, "admins", None) or []:
+        ids.update(getattr(card, "ids", []) or [])
+    ids.update(getattr(cfg, "owner_ids", None) or [])
+    single = norm_id(getattr(cfg, "owner_qq", "") or "")
+    if single:
+        ids.add(single)
+    return ids
+
+
 def allowed(cfg: Config, conv_id: str, sender_id: str) -> bool:
     kind, target = split_conv(conv_id)
     sender = norm_id(sender_id)
@@ -30,7 +42,7 @@ def allowed(cfg: Config, conv_id: str, sender_id: str) -> bool:
         if target in allow.deny_private or sender in allow.deny_private:
             return False
 
-    if cfg.owner_qq and kind == "private" and sender == cfg.owner_qq:
+    if kind == "private" and sender in owner_set(cfg):
         return True
 
     listed = allow.groups if kind == "group" else allow.private

@@ -15,7 +15,7 @@ import time
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent          # qqbridge/
+ROOT = Path(__file__).resolve().parent.parent          # 海螺/
 PROJECT = ROOT.parent                                   # 项目根目录的上一级
 CONFIG = ROOT / "config.json"
 PYTHONW = ROOT / ".venv" / "Scripts" / "pythonw.exe"
@@ -114,10 +114,10 @@ def _launch_items() -> list[dict]:
     """launchers.json + 各插件 metadata.json 里的 launch 段（手写的优先）。"""
     import sys
 
-    if str(PROJECT) not in sys.path:
-        sys.path.insert(0, str(PROJECT))
+    if str(ROOT) not in sys.path:
+        sys.path.insert(0, str(ROOT))
     try:
-        from qqbridge.core import launchers as L
+        from core import launchers as L
 
         data = cfg()
         roots = [str(ROOT / "plugins")]
@@ -258,8 +258,8 @@ def _main_locked(url: str) -> int:
     # 先起海螺本体：面板页面第一个可用，启动脚本就能立刻把它打开；
     # 其它服务在后台继续慢慢起，不再挡着页面。
     if not host_up(url):
-        pid = spawn([str(PYTHONW), "-m", "qqbridge.main", "--config", str(CONFIG)],
-                    str(PROJECT), "conch-run.log")
+        pid = spawn([str(PYTHONW), str(ROOT / "main.py"), "--config", str(CONFIG)],
+                    str(ROOT), "conch-run.log")
         log(f"海螺本体 pid {pid}")
 
     # 守卫要在服务起来之前就位（查一次进程要 1 秒多，所以放在本体之后）

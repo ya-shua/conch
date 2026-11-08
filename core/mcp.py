@@ -274,3 +274,18 @@ class McpPool:
             return await srv.call(tool, arguments)
         except Exception as exc:
             return f"工具 {tool} 出错：{exc}"
+
+    async def call_raw(self, server: str, tool: str, arguments: dict[str, Any]) -> str:
+        """直呼某个 server 上的工具，不管它有没有出现在工具清单里。
+
+        环形的心就是这样：`ring_ingest` 故意不给模型看（她的认知边界里没有"自动入库"），
+        但插件得能调 —— 每条消息都要它写进记忆库，跟她想不想得起来无关。
+        """
+        srv = self.servers.get(server)
+        if srv is None:
+            return f"没有这个服务：{server}"
+        try:
+            await srv.ensure()
+            return await srv.call(tool, arguments)
+        except Exception as exc:
+            return f"{server}.{tool} 出错：{exc}"

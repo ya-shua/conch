@@ -1,5 +1,5 @@
-from qqbridge.core.config import Config, AllowConfig
-from qqbridge.core.policy import allowed
+from core.config import Config, AllowConfig
+from core.policy import allowed
 
 
 def make(allow: AllowConfig, owner: str = "") -> Config:

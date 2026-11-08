@@ -13,10 +13,10 @@ import time
 import urllib.request
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent          # qqbridge/
+ROOT = Path(__file__).resolve().parent.parent          # 海螺/
 CONFIG = ROOT / "config.json"
 NO_WINDOW = 0x08000000
-MARKERS = ("qqbridge.main", "tide.panel", "window_guard")
+MARKERS = ("main.py --config", "tide.panel", "window_guard")
 
 
 def panel_url() -> str:

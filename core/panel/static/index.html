@@ -343,6 +343,26 @@ input[type=number]{font-variant-numeric:tabular-nums;max-width:110px}
 .kadd{display:flex;gap:8px}
 .kadd input#newKey{flex:1.4;min-width:0}
 .kadd input#newKeyLabel{flex:1;min-width:0}
+/* 模型名：输入框 + 「获取模型」+ 可搜索的候选列表 */
+.mwrap{position:relative}
+.mrow{display:flex;gap:8px;align-items:stretch}
+.mcombo{position:relative;flex:1;min-width:0;display:flex}
+.mcombo input{flex:1;min-width:0;padding-right:32px}
+.mcombo .mcar{position:absolute;right:1px;top:1px;bottom:1px;border:0;background:transparent;color:var(--muted);
+  padding:0 9px;font-size:11px;cursor:pointer;border-radius:0 8px 8px 0}
+.mcombo .mcar:hover{color:var(--accent,#6b5cff)}
+.mpick{position:absolute;z-index:60;left:0;right:0;top:100%;margin-top:6px;
+  border:1px solid var(--line);border-radius:11px;background:var(--card,#fff);
+  box-shadow:0 18px 44px rgba(16,18,32,.20);padding:8px;display:flex;flex-direction:column;gap:6px;max-height:320px}
+.mpick[hidden]{display:none}
+.mpick input[type=search]{width:100%;box-sizing:border-box}
+.mlist{overflow:auto;display:flex;flex-direction:column;gap:2px;min-height:36px}
+.mitem{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:6px 8px;border-radius:7px;
+  font-size:12px;cursor:pointer;font-family:ui-monospace,Menlo,monospace;white-space:nowrap;overflow:hidden}
+.mitem .mnm{overflow:hidden;text-overflow:ellipsis}
+.mitem:hover,.mitem.on{background:var(--surface-2);color:var(--accent,#6b5cff)}
+.mitem .mtag{color:var(--muted);font-size:10.5px;flex:0 0 auto}
+.mempty{padding:12px;color:var(--muted);font-size:12px;text-align:center}
 .mkbar{margin-bottom:10px}
 .mkbar input{width:100%}
 .mkgrid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:14px;margin-top:14px;padding:2px}
@@ -582,7 +602,7 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
     <button class="nav" data-view="strategy"><i>◈</i>发言策略</button>
     <button class="nav" data-view="access"><i>⊙</i>访问与安全</button>
     <button class="nav" data-view="lexicon"><i>▤</i>词库</button>
-    <button class="nav" data-view="stickers"><i>☺</i>表情包<span class="badge" id="navStickers"></span></button>
+    <button class="nav" data-view="stickers"><i>☺</i>表情包</button>
 
     <div class="grp">管理</div>
     <button class="nav" data-view="usage"><i>◧</i>花费</button>
@@ -772,7 +792,22 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
                 <div class="field" style="margin:0">
                   <label for="mergeMs">唤醒间隔（合流窗口）</label>
                   <input type="number" id="mergeMs" min="0" step="100">
-                  <div class="hint">毫秒。小于它的几条消息并成一句听。</div>
+                  <div class="hint">毫秒。你打完之后安静这么久她才开口，中途再发就重新计时。</div>
+                </div>
+                <div class="field" style="margin:0">
+                  <label for="gapBase">一句一条的停顿</label>
+                  <input type="number" id="gapBase" min="0" step="50">
+                  <div class="hint">毫秒。她说好几句时，两条之间的基础间隔（字越多越久）。</div>
+                </div>
+                <div class="field" style="margin:0">
+                  <label for="gapMax">单句停顿上限</label>
+                  <input type="number" id="gapMax" min="0" step="50">
+                  <div class="hint">毫秒。再长的句子也不会停超过这个数。</div>
+                </div>
+                <div class="field" style="margin:0">
+                  <label for="maxLines">一轮最多几条</label>
+                  <input type="number" id="maxLines" min="0" step="1">
+                  <div class="hint">条。多出来的并到最后一条里；0 = 不限。</div>
                 </div>
                 <div class="field" style="margin:0">
                   <label for="wakeGap">两次开口最短间隔</label>
@@ -784,6 +819,32 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
                   <input type="number" id="sleepAfter" min="0">
                   <div class="hint">秒。0 = 不睡。睡着后只有 @ 她才理。</div>
                 </div>
+              </div>
+            </div>
+          </details>
+
+          <details class="fold" open>
+            <summary>重启与收尾 <span class="fsub">她关掉的那几分钟别漏消息；你说了晚安她就别追</span></summary>
+            <div class="fbody">
+              <div class="line">
+                <div><div class="t">重启后补回漏掉的消息</div><div class="d">停服、崩溃、一键关闭期间没回成的私聊，起来后补一次。</div></div>
+                <div class="c"><button class="sw" id="catchSwitch" aria-label="重启后补回漏掉的消息"></button></div>
+              </div>
+              <div class="row3" style="margin-top:12px">
+                <div class="field" style="margin:0">
+                  <label for="catchMin">回看多少分钟</label>
+                  <input type="number" id="catchMin" min="1" step="5">
+                  <div class="hint">分钟。更早的不补，免得翻旧账。</div>
+                </div>
+              </div>
+              <div class="line" style="margin-top:16px">
+                <div><div class="t">听到收尾话就不回</div><div class="d">你说"晚安""去忙了"这类，她就不追一句。</div></div>
+                <div class="c"><button class="sw" id="closingSwitch" aria-label="听到收尾话就不回"></button></div>
+              </div>
+              <div class="field" style="margin-top:12px">
+                <label for="closingWords">收尾话词表</label>
+                <textarea id="closingWords" rows="4" style="min-height:96px" placeholder="一行一个，或用逗号隔开"></textarea>
+                <div class="hint">只认 10 字以内的短句；"今晚早点睡，晚安"这种长句不算，她照常接。</div>
               </div>
             </div>
           </details>
@@ -851,16 +912,27 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
                 </div>
 
                 <div class="wl-row">
-                  <div class="wl-t"><b>管理员</b><span>私聊始终放行，可以下管理命令</span></div>
+                  <div class="wl-t"><b>管理员</b><span>私聊始终放行，可以下管理命令；可以有好几个（她按 #QQ号 分清是谁）</span></div>
                   <div class="wl-f">
                     <div>
-                      <label for="ownerQQ">管理员 QQ</label>
-                      <input type="text" id="ownerQQ" placeholder="123456，多个用逗号隔开">
+                      <label for="ownerQQ">管理员 QQ（多个用逗号隔开）</label>
+                      <input type="text" id="ownerQQ" placeholder="123456，600000">
                     </div>
                     <div>
                       <label>白名单为空时放行全部</label>
                       <button class="sw" id="allowAllSwitch" aria-label="白名单为空时放行全部"></button>
                       <div class="hint" style="margin-top:6px">不建议开。开了等于把账号交给模型。</div>
+                    </div>
+                  </div>
+                </div>
+
+              <div class="wl-row">
+                  <div class="wl-t"><b>称呼卡</b><span>一卡一人，可挂多个 QQ 号（单人多号）；称呼只是「希望你这么叫」，真正能用的词还是人设里那套</span></div>
+                  <div class="wl-f" style="display:block">
+                    <div id="adminCards"></div>
+                    <div style="margin-top:10px">
+                      <button class="ghost sm" id="addAdminCard">+ 加一张卡</button>
+                      <span class="hint" style="margin-left:8px">不建卡也行，那就用上面那栏「管理员 QQ」。</span>
                     </div>
                   </div>
                 </div>
@@ -1044,14 +1116,22 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
                   <input type="text" id="providerLabel" placeholder="比如：我的中转、某某 API">
                   <div class="hint">只用来显示，不参与请求。</div>
                 </div>
-                <div class="field">
+                <div class="field" id="modelField">
                   <label for="modelName">模型名</label>
-                  <div style="display:flex;gap:8px">
-                    <input type="text" id="modelName" list="modelOptions" placeholder="deepseek-chat" style="flex:1">
-                    <button id="fetchModelsBtn" type="button">拉模型</button>
+                  <div class="mwrap">
+                    <div class="mrow">
+                      <div class="mcombo">
+                        <input type="text" id="modelName" placeholder="deepseek-chat" autocomplete="off" spellcheck="false">
+                        <button class="mcar" id="modelPickBtn" type="button" title="从拉到的模型里挑一个">▾</button>
+                      </div>
+                      <button id="fetchModelsBtn" type="button" title="用这把 Key 拉出它支持的模型，然后在这里搜着挑">获取模型</button>
+                    </div>
+                    <div class="mpick" id="modelPick" hidden>
+                      <input type="search" id="modelSearch" placeholder="搜模型名…（Enter 选第一个，Esc 关掉）" autocomplete="off">
+                      <div class="mlist" id="modelList"></div>
+                    </div>
                   </div>
-                  <datalist id="modelOptions"></datalist>
-                  <div class="hint" id="modelHint">填地址和 Key 后可以点「拉模型」，从中挑一个，也能自己敲。</div>
+                  <div class="hint" id="modelHint">填地址和 Key 后点「获取模型」，从它支持的模型里搜一个；不拉也能自己敲。</div>
                 </div>
                 <div class="field" style="margin-bottom:0" hidden><input type="password" id="apiKey"></div>
                 <div class="field" style="margin-bottom:0">
@@ -1458,20 +1538,24 @@ async function loadPlugins() {
     return ACCENTS[h % ACCENTS.length];
   };
 
-  const btnPage = (url, hold) =>
-    url
-      ? '<a class="sm btn" href="' + esc(url) + '" target="_blank" rel="noreferrer">页面</a>'
-      : hold ? '<button class="sm" disabled title="这个没有单独页面">页面</button>' : "";
+  // 状态统一两个词：运行中 / 已关闭。页面按钮只在服务真的在听的时候能点。
+  const btnPage = (url, live) =>
+    !url
+      ? ""
+      : live === false
+        ? '<button class="sm" disabled title="服务没起来">页面</button>'
+        : '<a class="sm btn" href="' + esc(url) + '" target="_blank" rel="noreferrer">页面</a>';
   const plugCard = (p, launch) => {
-    const st = p.status === "enabled" ? pill("g", "运行中")
-      : p.status === "error" ? pill("r", "异常") : pill("n", "已停用");
+    const running = !!p.running;
+    const st = running ? pill("g", "运行中") : pill("n", "已关闭");
     const own = p.name || p.id;
     const name = esc(p.alias || own);
     const open = p.status === "enabled";
     // 页面地址：插件自己写了就用插件的，否则用启动项的
     const page = p.page || (launch && launch.url) || "";
+    const pageLive = p.service_up !== false && (launch ? launch.running || !launch.port : true);
     // 统一四个：页面 / 重载 / 日志 / 启动（关闭）；没有页面的纯代码插件就别摆个死按钮
-    let acts = btnPage(page, !!(launch && launch.url));
+    let acts = btnPage(page, pageLive);
     if (launch) {
       acts += '<button class="sm" data-restart="' + esc(launch.id) + '" data-name="' + name + '">重载</button>';
       acts += '<button class="sm" data-log="' + esc(launch.id) + '">日志</button>';
@@ -1483,8 +1567,7 @@ async function loadPlugins() {
       acts += '<button class="' + (open ? "sm" : "primary sm") + '" data-plug="' + (open ? "off" : "on") +
         '" data-pid="' + esc(p.id) + '" data-name="' + name + '">' + (open ? "关闭" : "启动") + "</button>";
     }
-    const port = launch && launch.port ? " · 端口 " + launch.port : "";
-    const runDot = launch ? (launch.running ? pill("g", "在跑") : pill("n", "没跑")) : "";
+    const port = p.port ? " · 端口 " + p.port : (launch && launch.port ? " · 端口 " + launch.port : "");
     return shell({
       attrs: 'data-plugin="' + esc(p.id) + '"' +
         (launch ? ' data-launcher="' + esc(launch.id) + '" data-url="' + esc(launch.url || "") +
@@ -1494,7 +1577,7 @@ async function loadPlugins() {
       rawName: own,
       ren: p.id,
       en: p.name_en || (launch && launch.en) || p.id,
-      pill: runDot || st,
+      pill: st,
       meta: "v" + esc(p.version) + " · 海螺插件" + (p.author ? " · " + esc(p.author) : "") + port,
       secret: launch ? launch.secret || launch.token || "" : "",
       secretLabel: launch && launch.secret ? "密码" : "口令",
@@ -1506,10 +1589,10 @@ async function loadPlugins() {
   };
 
   const launchCard = (it) => {
-    const dot = it.running ? pill("g", "在跑") : pill("n", "没跑");
+    const dot = it.running ? pill("g", "运行中") : pill("n", "已关闭");
     const own = it.name || it.id;
     const name = esc(it.alias || own);
-    let acts = btnPage(it.url, true);
+    let acts = btnPage(it.url, !!it.running);
     acts += '<button class="sm" data-restart="' + esc(it.id) + '" data-name="' + name + '">重载</button>';
     acts += '<button class="sm" data-log="' + esc(it.id) + '">日志</button>';
     acts += '<button class="' + (it.running ? "sm" : "primary sm") + '" data-act="' + (it.running ? "stop" : "start") +
@@ -1941,6 +2024,13 @@ async function loadStrategy() {
   $("maxPerHour").value = s.max_per_hour;
   $("maxConsec").value = s.max_consecutive;
   if ($("mergeMs")) $("mergeMs").value = settings.merge_window_ms;
+  if ($("gapBase")) $("gapBase").value = settings.reply_gap_base_ms;
+  if ($("gapMax")) $("gapMax").value = settings.reply_gap_max_ms;
+  if ($("maxLines")) $("maxLines").value = settings.reply_max_lines;
+  if ($("catchMin")) $("catchMin").value = settings.catch_up_minutes;
+  if ($("closingWords")) $("closingWords").value = (settings.closing_words || []).join("\n");
+  if ($("catchSwitch")) $("catchSwitch").className = "sw" + (settings.catch_up_enabled ? " on" : "");
+  if ($("closingSwitch")) $("closingSwitch").className = "sw" + (settings.closing_enabled ? " on" : "");
   if ($("wakeGap")) $("wakeGap").value = s.wake_gap_sec || 0;
   if ($("sleepAfter")) $("sleepAfter").value = s.sleep_after_sec || 0;
   if ($("quietStart")) $("quietStart").value = s.quiet_start || "";
@@ -1956,6 +2046,13 @@ async function saveStrategy() {
       method: "PUT",
       body: JSON.stringify({
         merge_window_ms: Number($("mergeMs") ? $("mergeMs").value : settings.merge_window_ms) || 0,
+        reply_gap_base_ms: Number($("gapBase") ? $("gapBase").value : settings.reply_gap_base_ms) || 0,
+        reply_gap_max_ms: Number($("gapMax") ? $("gapMax").value : settings.reply_gap_max_ms) || 0,
+        reply_max_lines: Number($("maxLines") ? $("maxLines").value : settings.reply_max_lines) || 0,
+        catch_up_enabled: !!settings.catch_up_enabled,
+        catch_up_minutes: Number($("catchMin") ? $("catchMin").value : settings.catch_up_minutes) || 30,
+        closing_enabled: !!settings.closing_enabled,
+        closing_words: ($("closingWords") ? $("closingWords").value : "").split(/[\n,，;；]+/).map((x) => x.trim()).filter(Boolean),
         strategy: {
           trigger: settings.strategy.trigger,
           participate: settings.strategy.participate,
@@ -2072,6 +2169,81 @@ async function loadGroups() {
 const _chatSearch = $("chatSearch");
 if (_chatSearch) _chatSearch.oninput = () => renderChats();
 
+function _splitIds(v) {
+  return String(v || "").split(/[,，;；\s]+/).map((s) => s.trim()).filter(Boolean);
+}
+
+function _byGroupText(card) {
+  return Object.entries((card.call && card.call.by_group) || {})
+    .map(([g, v]) => g + "：" + v).join("，");
+}
+
+function _parseByGroup(text) {
+  const out = {};
+  String(text || "").split(/[,，;；\n]+/).forEach((pair) => {
+    const m = pair.split(/[:：]/);
+    if (m.length >= 2 && m[0].trim() && m[1].trim()) out[m[0].trim()] = m[1].trim();
+  });
+  return out;
+}
+
+function renderAdminCards() {
+  const box = $("adminCards");
+  if (!box) return;
+  const cards = accessState.admins || [];
+  if (!cards.length) {
+    box.innerHTML = '<div class="hint">还没有称呼卡。上面的「管理员 QQ」会自动当成一张叫「管理员」的卡。</div>';
+    return;
+  }
+  box.innerHTML = cards.map((c, i) => {
+    const call = c.call || {};
+    return '<div class="wl-row" data-card="' + i + '" style="border:1px solid var(--line,#2a2a2a);border-radius:10px;padding:10px;margin-bottom:10px">' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap">' +
+        '<div style="flex:1;min-width:140px"><label>卡名</label>' +
+          '<input type="text" data-k="name" value="' + esc(c.name || "") + '" placeholder="管理员A"></div>' +
+        '<div style="flex:2;min-width:200px"><label>QQ 号（多个用逗号）</label>' +
+          '<input type="text" data-k="ids" value="' + esc((c.ids || []).join("，")) + '" placeholder="1234567890，9876543210"></div>' +
+        '<div style="flex:1;min-width:120px"><label>私聊怎么叫</label>' +
+          '<input type="text" data-k="private" value="' + esc(call.private || "") + '" placeholder="老爹"></div>' +
+        '<div style="flex:1;min-width:120px"><label>群里怎么叫</label>' +
+          '<input type="text" data-k="group" value="' + esc(call.group || "") + '" placeholder="老大"></div>' +
+      '</div>' +
+      '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:8px;align-items:flex-end">' +
+        '<div style="flex:2;min-width:220px"><label>按群单独设置（群号：称呼，逗号隔开）</label>' +
+          '<input type="text" data-k="by_group" value="' + esc(_byGroupText(c)) + '" placeholder="123456：老翰"></div>' +
+        '<div><button class="ghost sm" data-del="' + i + '">删掉这张</button></div>' +
+      '</div>' +
+    '</div>';
+  }).join("");
+}
+
+if ($("adminCards")) {
+  $("adminCards").addEventListener("input", (e) => {
+    const holder = e.target.closest("[data-card]");
+    if (!holder) return;
+    const i = Number(holder.dataset.card);
+    const card = accessState.admins[i];
+    if (!card) return;
+    card.call = card.call || {};
+    const k = e.target.dataset.k;
+    if (k === "ids") card.ids = _splitIds(e.target.value);
+    else if (k === "name") card.name = e.target.value;
+    else if (k === "by_group") card.call.by_group = _parseByGroup(e.target.value);
+    else card.call[k] = e.target.value;
+  });
+  $("adminCards").addEventListener("click", (e) => {
+    const btn = e.target.closest("[data-del]");
+    if (!btn) return;
+    accessState.admins.splice(Number(btn.dataset.del), 1);
+    renderAdminCards();
+  });
+  $("addAdminCard").onclick = () => {
+    accessState.admins = accessState.admins || [];
+    accessState.admins.push({ name: "管理员" + "ABCDEFG"[accessState.admins.length] , ids: [], call: {} });
+    renderAdminCards();
+  };
+}
+
 async function loadAccess() {
   loadGroups();
   settings = await api("/api/settings");
@@ -2082,6 +2254,12 @@ async function loadAccess() {
     deny_private: settings.allow.deny_private.slice(),
     allow_all: settings.allow.allow_all_when_empty,
     owner: settings.owner_qq || "",
+    admins: (settings.admins || []).map((c) => ({
+      name: c.name || "管理员",
+      ids: (c.ids || []).slice(),
+      call: { private: (c.call || {}).private || "", group: (c.call || {}).group || "",
+              by_group: Object.assign({}, (c.call || {}).by_group || {}) },
+    })),
   };
   makeChips($("groupChips"), accessState.groups);
   makeChips($("privateChips"), accessState.private);
@@ -2089,22 +2267,24 @@ async function loadAccess() {
   makeChips($("denyPrivateChips"), accessState.deny_private);
   $("ownerQQ").value = accessState.owner;
   $("allowAllSwitch").className = "sw" + (accessState.allow_all ? " on" : "");
+  renderAdminCards();
 }
 
 async function saveAccess() {
   try {
-    await api("/api/settings", {
-      method: "PUT",
-      body: JSON.stringify({
-        owner_qq: $("ownerQQ").value.trim(),
-        allow: {
-          groups: accessState.groups, private: accessState.private,
-          deny_groups: accessState.deny_groups, deny_private: accessState.deny_private,
-          allow_all_when_empty: accessState.allow_all,
-        },
-      }),
-    });
+    const payload = {
+      allow: {
+        groups: accessState.groups, private: accessState.private,
+        deny_groups: accessState.deny_groups, deny_private: accessState.deny_private,
+        allow_all_when_empty: accessState.allow_all,
+      },
+    };
+    const cards = (accessState.admins || []).filter((c) => (c.ids || []).length);
+    if (cards.length) payload.admins = cards;
+    else payload.owner_qq = $("ownerQQ").value.trim();
+    await api("/api/settings", { method: "PUT", body: JSON.stringify(payload) });
     toast("已保存");
+    await loadAccess();
   } catch (e) { toast("保存失败：" + e.message); }
 }
 
@@ -2300,9 +2480,10 @@ function renderKeys() {
     const cur = i === modelKeyCur ? '<span class="kcur">在用</span>' : "";
     return '<div class="krow' + (i === modelKeyCur ? " on" : "") + '">' +
       '<span class="knum">' + (i + 1) + "</span>" +
-      '<span class="kkey">' + esc(k.masked || "") + "</span>" +
-      (k.label ? '<span class="klab">' + esc(k.label) + "</span>" : "") + cur +
+      '<span class="kkey" title="' + esc(k.masked || "") + '">' + esc(k.masked || "") + "</span>" +
+      (k.label ? '<span class="klab" title="' + esc(k.label) + '">' + esc(k.label) + "</span>" : "") + cur +
       '<span class="kact">' +
+      '<button data-kmodels="' + i + '" title="看这把 Key 支持哪些模型">模型</button>' +
       '<button data-kmove="up" data-ki="' + i + '" title="上移">↑</button>' +
       '<button data-kmove="down" data-ki="' + i + '" title="下移">↓</button>' +
       '<button data-kdel="' + i + '" title="删掉">✕</button>' +
@@ -2311,13 +2492,54 @@ function renderKeys() {
   box.querySelectorAll("button[data-kmove]").forEach((b) => {
     b.onclick = () => keyOp({ action: "move", index: Number(b.dataset.ki), dir: b.dataset.kmove });
   });
-  box.querySelectorAll("button[data-kdel]").forEach((b) => {
-    b.onclick = async () => {
-      const n = Number(b.dataset.kdel) + 1;
-      if (!(await askConfirm("删掉第 " + n + " 把 Key？", "删了就不参与轮换扣费了。", { ok: "删掉", danger: true }))) return;
-      keyOp({ action: "remove", index: Number(b.dataset.kdel) });
-    };
+  box.querySelectorAll("button[data-kmodels]").forEach((b) => {
+    b.onclick = () => fetchModelsFor($("fetchModelsBtn"), Number(b.dataset.kmodels));
   });
+  box.querySelectorAll("button[data-kdel]").forEach((b) => {
+    b.onclick = () => removeKeyAt(Number(b.dataset.kdel));
+  });
+}
+
+async function addKeyNow() {
+  const keyEl = $("newKey");
+  const labEl = $("newKeyLabel");
+  const btn = $("addKeyBtn");
+  const key = keyEl ? keyEl.value.trim() : "";
+  const label = labEl ? labEl.value.trim() : "";
+  if (!key) { toast("先粘一把 Key"); if (keyEl) keyEl.focus(); return; }
+  btn.disabled = true;
+  try {
+    await api("/api/model/keys", { method: "POST", body: JSON.stringify({ action: "add", key, label }) });
+    if (keyEl) keyEl.value = "";
+    if (labEl) labEl.value = "";
+    await loadKeys();
+    await loadStatus();
+    toast("加好了，现在 " + modelKeys.length + " 把");
+    if (keyEl) keyEl.focus();
+  } catch (e) {
+    toast("加不了：" + e.message);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
+async function removeKeyAt(index) {
+  const n = index + 1;
+  const last = modelKeys.length === 1;
+  const ok = await askConfirm(
+    "删掉第 " + n + " 把 Key？",
+    last ? "这是最后一把，删了模型就调不了了。" : "删了就不参与轮换扣费了。",
+    { ok: "删掉", danger: true }
+  );
+  if (!ok) return;
+  try {
+    await api("/api/model/keys", { method: "POST", body: JSON.stringify({ action: "remove", index }) });
+    await loadKeys();
+    await loadStatus();
+    toast(modelKeys.length ? "删掉了，还剩 " + modelKeys.length + " 把" : "删掉了，现在没有 Key");
+  } catch (e) {
+    toast("删不掉：" + e.message);
+  }
 }
 
 async function keyOp(body) {
@@ -2734,7 +2956,6 @@ async function toggleStickerCfg() {
 async function loadStickers() {
   const grid = $("skinGrid");
   const note = $("stickerCount");
-  const badge = $("navStickers");
   if (!grid) return;
   const cfgBtn = $("stCfg");
   if (cfgBtn) cfgBtn.onclick = toggleStickerCfg;
@@ -2750,7 +2971,6 @@ async function loadStickers() {
   const items = data.items || [];
   const total = data.count || 0;
   if (note) note.textContent = "共 " + total + " 张 · 收藏 " + (data.fav_count || 0) + " · 群里 " + (data.collected_count || 0);
-  if (badge) badge.textContent = total ? String(total) : "";
   if (!items.length) {
     grid.innerHTML = '<div class="empty"><span class="ei">☺</span><span>还没有表情</span><span>点「同步 QQ 收藏」，或者等群里有人发表情</span></div>';
     return;
@@ -2920,6 +3140,16 @@ $("confirmSwitch").onclick = () => {
   settings.strategy.confirm_uncertain = !settings.strategy.confirm_uncertain;
   $("confirmSwitch").className = "sw" + (settings.strategy.confirm_uncertain ? " on" : "");
 };
+if ($("catchSwitch")) $("catchSwitch").onclick = () => {
+  if (!settings) return;
+  settings.catch_up_enabled = !settings.catch_up_enabled;
+  $("catchSwitch").className = "sw" + (settings.catch_up_enabled ? " on" : "");
+};
+if ($("closingSwitch")) $("closingSwitch").onclick = () => {
+  if (!settings) return;
+  settings.closing_enabled = !settings.closing_enabled;
+  $("closingSwitch").className = "sw" + (settings.closing_enabled ? " on" : "");
+};
 
 $("saveModelBtn").onclick = async () => {
   const body = {
@@ -3063,29 +3293,82 @@ const PROVIDERS = {
   siliconflow: { base: "https://api.siliconflow.cn/v1", model: "Qwen/Qwen2.5-7B-Instruct" },
 };
 
-$("fetchModelsBtn").onclick = async () => {
-  const btn = $("fetchModelsBtn");
+/* ---------- 模型名：拉「这把 Key 支持的模型」+ 搜着挑 ---------- */
+let modelCands = [];   // 最近一次拉到的模型
+let modelCur = -1;     // 键盘上下移动的游标
+
+function renderModelPick(filter) {
+  const box = $("modelList");
+  if (!box) return;
+  const q = String(filter || "").trim().toLowerCase();
+  const rows = q ? modelCands.filter((m) => m.toLowerCase().indexOf(q) !== -1) : modelCands;
+  if (!rows.length) {
+    box.innerHTML = '<div class="mempty">' + (modelCands.length ? "没有匹配的" : "还没拉到模型") + "</div>";
+    modelCur = -1;
+    return;
+  }
+  if (modelCur >= rows.length) modelCur = rows.length - 1;
+  if (modelCur < 0) modelCur = 0;
+  box.innerHTML = rows.map((m, i) =>
+    '<div class="mitem' + (i === modelCur ? " on" : "") + '" data-mi="' + i + '">' +
+      '<span class="mnm">' + esc(m) + "</span>" +
+      (m === $("modelName").value.trim() ? '<span class="mtag">当前</span>' : "") +
+    "</div>").join("");
+  box.querySelectorAll(".mitem").forEach((el) => {
+    el.onmousedown = (ev) => { ev.preventDefault(); pickModel(rows[Number(el.dataset.mi)]); };
+  });
+  const on = box.querySelector(".mitem.on");
+  if (on && on.scrollIntoView) on.scrollIntoView({ block: "nearest" });
+}
+
+function openModelPick() {
+  $("modelPick").hidden = false;
+  renderModelPick($("modelSearch").value);
+}
+
+function closeModelPick() {
+  $("modelPick").hidden = true;
+  modelCur = -1;
+}
+
+function pickModel(name) {
+  if (!name) return;
+  $("modelName").value = name;
+  $("modelHint").textContent = "选中了 " + name + "，记得点下面的「保存」。";
+  $("modelHint").style.color = "var(--ok)";
+  closeModelPick();
+}
+
+async function fetchModelsFor(btn, index) {
   const hint = $("modelHint");
   const base = $("baseUrl").value.trim();
   if (!base) { hint.textContent = "先填接口地址"; hint.style.color = "var(--danger)"; $("baseUrl").focus(); return; }
+  const typed = ($("newKey") ? $("newKey").value.trim() : "");
+  if (!typed && !modelKeys.length) {
+    hint.textContent = "先加一把 Key（或粘到下面那个框里）"; hint.style.color = "var(--danger)"; $("newKey").focus(); return;
+  }
+  btn = btn || $("fetchModelsBtn");
   btn.disabled = true;
-  hint.textContent = "拉取中…";
+  hint.textContent = "正在问这把 Key 支持哪些模型…";
   hint.style.color = "var(--muted)";
   try {
     const body = { base_url: base };
-    const typed = ($("newKey") ? $("newKey").value.trim() : "");
-    if (typed) body.api_key = typed;
+    if (typed && index == null) body.api_key = typed;
+    else body.index = index != null ? index : (modelKeyCur >= 0 ? modelKeyCur : 0);
     const r = await api("/api/models/list", { method: "POST", body: JSON.stringify(body) });
-    const list = r.models || [];
-    $("modelOptions").innerHTML = list.map((m) => '<option value="' + m.replace(/"/g, "&quot;") + '"></option>').join("");
-    if (list.length) {
-      hint.textContent = "拉到 " + list.length + " 个模型，点输入框挑一个";
+    modelCands = r.models || [];
+    $("modelSearch").value = "";
+    if (modelCands.length) {
+      const who = typed ? "手填的 Key" : (r.key_label || "当前 Key") + (r.key_index >= 0 ? "（第 " + (r.key_index + 1) + " 把）" : "");
+      hint.textContent = who + " 支持 " + modelCands.length + " 个模型，搜一个挑，或者直接敲。";
       hint.style.color = "var(--ok)";
-      if (!$("modelName").value.trim()) $("modelName").value = list[0];
-      $("modelName").focus();
+      modelCur = 0;
+      openModelPick();
+      $("modelSearch").focus();
     } else {
       hint.textContent = "接口通了，但它没给出模型列表，手填一个吧";
       hint.style.color = "var(--muted)";
+      modelCands = [];
     }
   } catch (e) {
     hint.textContent = "拉不到：" + e.message + "（有些中转不实现 /models，手填模型名也行）";
@@ -3093,7 +3376,48 @@ $("fetchModelsBtn").onclick = async () => {
   } finally {
     btn.disabled = false;
   }
+}
+
+$("fetchModelsBtn").onclick = () => fetchModelsFor($("fetchModelsBtn"));
+
+$("addKeyBtn").onclick = addKeyNow;
+if ($("newKey")) $("newKey").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addKeyNow(); } };
+if ($("newKeyLabel")) $("newKeyLabel").onkeydown = (e) => { if (e.key === "Enter") { e.preventDefault(); addKeyNow(); } };
+
+$("modelPickBtn").onclick = () => {
+  if ($("modelPick").hidden) {
+    if (!modelCands.length) fetchModelsFor($("fetchModelsBtn"));
+    else { openModelPick(); $("modelSearch").focus(); }
+  } else closeModelPick();
 };
+
+$("modelSearch").oninput = () => { modelCur = -1; renderModelPick($("modelSearch").value); };
+
+$("modelSearch").onkeydown = (e) => {
+  const box = $("modelList");
+  const items = box ? Array.from(box.querySelectorAll(".mitem")) : [];
+  if (e.key === "Escape") { e.preventDefault(); closeModelPick(); return; }
+  if (e.key === "Enter") {
+    e.preventDefault();
+    const on = box && box.querySelector(".mitem.on");
+    if (on) on.dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    else if (items.length) items[0].dispatchEvent(new MouseEvent("mousedown", { bubbles: true }));
+    return;
+  }
+  if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+    e.preventDefault();
+    if (!items.length) return;
+    modelCur = (modelCur + (e.key === "ArrowDown" ? 1 : -1) + items.length) % items.length;
+    renderModelPick($("modelSearch").value);
+    $("modelSearch").focus();
+  }
+};
+
+document.addEventListener("mousedown", (e) => {
+  const f = $("modelField");
+  if (!f || $("modelPick").hidden) return;
+  if (!f.contains(e.target)) closeModelPick();
+});
 
 function detectProvider(base, label) {
   base = (base || "").replace(/\/+$/, "");
@@ -3106,15 +3430,15 @@ function detectProvider(base, label) {
 $("providerPick").onchange = () => {
   const key = $("providerPick").value;
   const p = PROVIDERS[key];
+  modelCands = [];
+  closeModelPick();
   if (!p) {  // 自定义 / 中转：不动你填的东西，只是把焦点递过去
-    $("modelOptions").innerHTML = "";
     $("baseUrl").focus();
     return;
   }
   $("baseUrl").value = p.base;
   $("modelName").value = p.model;
   if ($("providerLabel")) $("providerLabel").value = "";
-  $("modelOptions").innerHTML = "";
 };
 
 /* ---------- 登录 ---------- */

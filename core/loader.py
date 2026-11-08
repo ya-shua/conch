@@ -127,7 +127,7 @@ class Loader:
         if not entry.exists():
             raise FileNotFoundError(f"{meta.path} 缺少 main.py")
 
-        module_name = f"qqbridge_plugin_{pid}"
+        module_name = f"conch_plugin_{pid}"
         spec = importlib.util.spec_from_file_location(module_name, entry)
         if spec is None or spec.loader is None:
             raise RuntimeError(f"无法加载 {entry}")
@@ -169,7 +169,7 @@ class Loader:
                 log_.warning("插件 %s 拆卸异常：%s", pid, exc)
         if ctx is not None and hasattr(ctx, "bus"):
             ctx.bus.off_owner(pid)
-        sys.modules.pop(f"qqbridge_plugin_{pid}", None)
+        sys.modules.pop(f"conch_plugin_{pid}", None)
         self.status[pid] = STATUS_DISABLED
 
     async def reload(self, pid: str) -> None:
@@ -178,7 +178,7 @@ class Loader:
         if was_enabled:
             await self.disable(pid)
         # 模块缓存里那份也要丢掉，否则改过的代码不会生效
-        sys.modules.pop(f"qqbridge_plugin_{pid}", None)
+        sys.modules.pop(f"conch_plugin_{pid}", None)
         await self.enable(pid)
 
     async def reload_all(self) -> dict[str, list[str] | dict[str, str]]:

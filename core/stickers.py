@@ -316,7 +316,13 @@ class Stickers:
         except Exception:
             return
         usable = [r for r in rows if r.get("file") or r.get("url") or r.get("summary")]
+        extra = str(payload.get("extra") or "")
         if not usable:
+            tip = (
+                "[表情包] 本地库现在是空的。想发表情照样单独占一行写「【表情包：描述】」，"
+                "会从「表情包收录库」里挑一张发；别用 QQ 自带表情/emoji 凑数。"
+            )
+            payload["extra"] = (extra + "\n" + tip) if extra else tip
             return
         names = "、".join(self._label(r) for r in usable)
         try:
@@ -324,10 +330,10 @@ class Stickers:
         except Exception:
             total = 0
         line = (
-            "[表情包] 手里有 %d 张表情，常用的几张：%s。"
-            "要发的时候让海螺挑一张，别自己编表情名。" % (total, names)
+            "[表情包] 手里有 %d 张表情，常用的这几张：%s。\n"
+            "要发就单独占一行写「【表情包：名字】」，名字从上头这些里挑；"
+            "对不上名字会去大厅里挑一张。别用 QQ 自带表情/emoji 凑数。" % (total, names)
         )
-        extra = str(payload.get("extra") or "")
         payload["extra"] = (extra + "\n" + line) if extra else line
 
     # ---------- 4. 发出去 ----------

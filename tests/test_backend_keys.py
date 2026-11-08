@@ -1,4 +1,4 @@
-﻿"""用一个假的 OpenAI 端点证明轮换逻辑：第 1 把 401、第 2 把 200。"""
+"""用一个假的 OpenAI 端点证明轮换逻辑：第 1 把 401、第 2 把 200。"""
 import asyncio, json, sys
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent.parent))
@@ -27,8 +27,8 @@ async def main():
     await runner.setup()
     await web.TCPSite(runner, "127.0.0.1", 8899).start()
 
-    from qqbridge.core.backend import OpenAICompatBackend, BackendError
-    from qqbridge.core.config import ModelConfig
+    from core.backend import OpenAICompatBackend, BackendError
+    from core.config import ModelConfig
 
     def mk(keys):
         cfg = SimpleNamespace(model=ModelConfig(

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -71,6 +72,16 @@ class PanelConfig:
     token: str = ""
 
 
+# 默认的"收尾话"：主人说这些就是想结束，不用再追一句。
+# 只在句尾短句（≤10 字）上判定，避免"晚安"出现在长句里也闭嘴。
+DEFAULT_CLOSING_WORDS: tuple[str, ...] = (
+    "晚安", "我睡了", "睡了", "睡觉了", "去睡了", "先睡了", "睡觉去", "洗洗睡",
+    "拜拜", "再见", "我走了", "走了", "先走了", "下了", "我下了", "下线了",
+    "去忙了", "先忙了", "我忙了", "不聊了", "不说了", "先这样", "就这样", "回头聊",
+    "改天聊", "下次聊", "改天再说", "吃饭去了", "去洗澡了", "洗澡去了",
+    "上课去了", "上班去了", "干活去了", "溜了", "我溜了", "撤了", "先撤了",
+)
+
 DEFAULT_STRATEGY: dict[str, Any] = {
     "trigger": "at_only",  # at_only / at_or_name / any
     "participate": "must_reply",  # must_reply / may_chime / listen_only
@@ -95,7 +106,26 @@ class Config:
     model: ModelConfig = field(default_factory=ModelConfig)
     panel: PanelConfig = field(default_factory=PanelConfig)
     owner_qq: str = ""
-    merge_window_ms: int = 1500
+    # 管理员可以有多个：面板里用逗号隔开填。owner_qq 永远是第一个（老字段照旧能用）
+    owner_ids: list[str] = field(default_factory=list)
+    # 称呼卡：一卡一人（可挂多个号），带各场景想让她怎么叫
+    admins: list[Admin] = field(default_factory=list)
+    merge_window_ms: int = 4000
+    merge_max_wait_ms: int = 0
+    # 一句一条时的停顿：base + 字数*20ms，再拿 max 封顶（面板可调）
+    reply_gap_base_ms: int = 700
+    reply_gap_max_ms: int = 2200
+    reply_gap_char_ms: int = 20
+    # 一轮最多发几条（0 = 不限）；超出的并到最后一条
+    reply_max_lines: int = 4
+    # 重启/断线后，把没回成的私聊补一次
+    catch_up_enabled: bool = True
+    catch_up_minutes: int = 30      # 只回看这么久，更早的不吵她
+    # 主人用一句"收尾话"结束聊天时，她就不回了
+    closing_enabled: bool = True
+    closing_words: list[str] = field(default_factory=lambda: list(DEFAULT_CLOSING_WORDS))
+    # 听到的话顺手写进记忆库（环形的心），跟她想不想得起来无关
+    memory_ingest_enabled: bool = True
     data_dir: str = "data"
     roles_dir: str = "roles"
     plugins_dir: str = "plugins"
@@ -105,7 +135,7 @@ class Config:
 
     @property
     def db_path(self) -> Path:
-        return Path(self.data_dir) / "qqbridge.db"
+        return Path(self.data_dir) / "海螺.db"
 
 
 def _loads(text: str, path: Path) -> dict[str, Any]:
@@ -135,9 +165,98 @@ def _parse_keys(model_raw: dict) -> list[dict]:
                 key = str(item.get("key") or "").strip()
                 if key:
                     out.append({"key": key, "label": str(item.get("label") or "").strip()[:40]})
-    single = str(model_raw.get("api_key") or os.environ.get("QQBRIDGE_API_KEY", "") or "").strip()
+    single = str(model_raw.get("api_key") or os.environ.get("CONCH_API_KEY") or os.environ.get("QQBRIDGE_API_KEY", "") or "").strip()
     if not out and single:
         out.append({"key": single, "label": "默认"})
+    return out
+
+
+def owner_ids_of(value: Any) -> list[str]:
+    """把「管理员 QQ」拆成多个：逗号、中文逗号、分号、空格都认，去重保序。"""
+    out: list[str] = []
+    if isinstance(value, (list, tuple)):
+        parts = [str(v) for v in value]
+    else:
+        parts = [p for p in re.split(r"[,，;；\s]+", str(value or ""))]
+    for part in parts:
+        uid = norm_id(part)
+        if uid and uid not in out:
+            out.append(uid)
+    return out
+
+
+@dataclass
+class Admin:
+    """称呼卡：一个自己人。
+
+    - 可以挂多个 QQ 号（单人多号），这些号在她眼里是同一个人
+    - 称呼只是「这个场景希望你怎么叫」，真正的称呼词在人设卡里
+    """
+
+    id: str
+    name: str
+    ids: list[str] = field(default_factory=list)
+    private_call: str = ""
+    group_call: str = ""
+    by_group: dict[str, str] = field(default_factory=dict)
+
+    def call_for(self, kind: str, gid: str = "") -> str:
+        """这个场景该叫他什么：本群单独设的 > 群里默认 > 私聊。"""
+        if kind == "group":
+            return (self.by_group.get(norm_id(gid)) or self.group_call).strip()
+        return self.private_call.strip()
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "ids": list(self.ids),
+            "call": {
+                "private": self.private_call,
+                "group": self.group_call,
+                "by_group": dict(self.by_group),
+            },
+        }
+
+
+def parse_admins(value: Any) -> list[Admin]:
+    """读「称呼卡」数组。老配置没有这个字段就返回空，由 owner_qq 兜底。"""
+    if value is None:
+        return []
+    if not isinstance(value, list):
+        raise ConfigError("admins 必须是数组")
+    out: list[Admin] = []
+    seen: set[str] = set()
+    for i, item in enumerate(value):
+        if not isinstance(item, dict):
+            raise ConfigError("admins 里每一项都必须是对象")
+        ids = owner_ids_of(item.get("ids"))
+        if not ids:
+            raise ConfigError(f"admins 第 {i + 1} 项没有填 QQ 号")
+        for uid in ids:
+            if uid in seen:
+                raise ConfigError(f"QQ {uid} 同时出现在两张称呼卡里")
+            seen.add(uid)
+        call = item.get("call") or {}
+        if not isinstance(call, dict):
+            raise ConfigError("admins[].call 必须是对象")
+        by_group = call.get("by_group") or {}
+        if not isinstance(by_group, dict):
+            raise ConfigError("admins[].call.by_group 必须是对象")
+        out.append(
+            Admin(
+                id=str(item.get("id") or f"a{i + 1}").strip() or f"a{i + 1}",
+                name=str(item.get("name") or "管理员").strip() or "管理员",
+                ids=ids,
+                private_call=str(call.get("private") or "").strip(),
+                group_call=str(call.get("group") or "").strip(),
+                by_group={
+                    norm_id(k): str(v).strip()
+                    for k, v in by_group.items()
+                    if norm_id(k) and str(v).strip()
+                },
+            )
+        )
     return out
 
 
@@ -182,7 +301,7 @@ def load_config(path: str | Path) -> Config:
 
     cfg.model = ModelConfig(
         base_url=str(model_raw.get("base_url") or ""),
-        api_key=str(model_raw.get("api_key") or os.environ.get("QQBRIDGE_API_KEY", "")),
+        api_key=str(model_raw.get("api_key") or os.environ.get("CONCH_API_KEY") or os.environ.get("QQBRIDGE_API_KEY", "")),
         model=str(model_raw.get("model") or "deepseek-chat"),
         timeout_s=int(model_raw.get("timeout_s") or 60),
         keys=_parse_keys(model_raw),
@@ -193,8 +312,41 @@ def load_config(path: str | Path) -> Config:
         token=str(panel_raw.get("token") or ""),
     )
 
-    cfg.owner_qq = norm_id(raw.get("owner_qq"))
-    cfg.merge_window_ms = int(raw.get("merge_window_ms") or 1500)
+    legacy_ids = owner_ids_of(raw.get("owner_qq"))
+    cfg.owner_qq = legacy_ids[0] if legacy_ids else ""
+    cfg.admins = parse_admins(raw.get("admins"))
+    if cfg.admins:
+        ids: list[str] = []
+        for card in cfg.admins:
+            for uid in card.ids:
+                if uid not in ids:
+                    ids.append(uid)
+        # 老的 owner_qq 不在任何卡里、又没被删掉：单独补一张卡，别让它凭空失去管理员身份
+        extra = [uid for uid in legacy_ids if uid not in ids]
+        if extra:
+            cfg.admins.insert(0, Admin(id="a0", name="管理员", ids=extra))
+            ids = extra + ids
+        cfg.owner_ids = ids
+        cfg.owner_qq = ids[0]
+    else:
+        cfg.owner_ids = legacy_ids
+        cfg.owner_qq = legacy_ids[0] if legacy_ids else ""
+        cfg.admins = [Admin(id="a1", name="管理员", ids=list(legacy_ids))] if legacy_ids else []
+    cfg.merge_window_ms = int(raw.get("merge_window_ms") or 4000)
+    cfg.merge_max_wait_ms = int(raw.get("merge_max_wait_ms") or 0)
+    cfg.reply_gap_base_ms = max(0, int(raw.get("reply_gap_base_ms") if raw.get("reply_gap_base_ms") is not None else 700))
+    cfg.reply_gap_max_ms = max(0, int(raw.get("reply_gap_max_ms") if raw.get("reply_gap_max_ms") is not None else 2200))
+    cfg.reply_gap_char_ms = max(0, int(raw.get("reply_gap_char_ms") if raw.get("reply_gap_char_ms") is not None else 20))
+    cfg.reply_max_lines = max(0, int(raw.get("reply_max_lines") if raw.get("reply_max_lines") is not None else 4))
+    cfg.catch_up_enabled = bool(raw.get("catch_up_enabled", True))
+    cfg.catch_up_minutes = max(1, int(raw.get("catch_up_minutes") if raw.get("catch_up_minutes") is not None else 30))
+    cfg.closing_enabled = bool(raw.get("closing_enabled", True))
+    cfg.memory_ingest_enabled = bool(raw.get("memory_ingest_enabled", True))
+    words = raw.get("closing_words")
+    if isinstance(words, list):
+        cfg.closing_words = [str(w).strip() for w in words if str(w).strip()]
+    elif isinstance(words, str):
+        cfg.closing_words = [w.strip() for w in re.split(r"[,，;；\s]+", words) if w.strip()]
     cfg.strategy = {**DEFAULT_STRATEGY, **(raw.get("strategy") or {})}
     cfg.data_dir = str(raw.get("data_dir") or "data")
     cfg.roles_dir = str(raw.get("roles_dir") or "roles")
@@ -203,6 +355,10 @@ def load_config(path: str | Path) -> Config:
 
     if cfg.merge_window_ms < 0:
         raise ConfigError("merge_window_ms 不能为负")
+    if cfg.merge_max_wait_ms and cfg.merge_max_wait_ms < cfg.merge_window_ms:
+        cfg.merge_max_wait_ms = cfg.merge_window_ms
+    if cfg.reply_gap_max_ms and cfg.reply_gap_max_ms < cfg.reply_gap_base_ms:
+        cfg.reply_gap_max_ms = cfg.reply_gap_base_ms
 
     # 相对路径一律相对于配置文件所在目录，避免从别处启动时找不到
     base = path.parent

@@ -1,4 +1,4 @@
-from qqbridge.core.onebot import escape_cq, parse_event
+from core.onebot import escape_cq, parse_event
 
 
 def private_event():

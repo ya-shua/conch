@@ -20,3 +20,5 @@ launchers.json
 # 只在本机用的脚本（里面写死了我的路径）
 scripts/window_guard.py
 scripts/fix_integrity.ps1
+
+tests/.conch_plugin_dir

@@ -1,2 +1,5 @@
 aiohttp>=3.9
 pytest>=7.4
+# 托盘（Windows）：右下角图标 + 菜单
+pystray>=0.19
+Pillow>=10

@@ -128,7 +128,7 @@ class OneBotClient:
                 self.connected = False
                 log_.warning("连接断开：%s（%.0fs 后重试）", exc, backoff)
                 await asyncio.sleep(backoff)
-                backoff = min(backoff * 2, 30.0)
+                backoff = min(backoff * 2, 10.0)
 
     async def _connect_once(self) -> None:
         assert self._session is not None
@@ -203,6 +203,24 @@ class OneBotClient:
         if self.cfg.onebot.access_token:
             headers["Authorization"] = f"Bearer {self.cfg.onebot.access_token}"
 
+        try:
+            await self._post_message(url, payload, headers)
+            return
+        except RuntimeError as exc:
+            # 协议端没配系统表情表时，消息里带 [CQ:face] 会被整条拒掉：
+            #   OIDB error 11000 ... sysemojis cfg not found  # privacy-ok
+            # 把表情段摘掉重发一次 —— 少个表情，总比整句发不出去强。
+            text = str(exc).lower()
+            if "emoji" not in text and "11000" not in text:  # privacy-ok
+                raise
+            stripped = [seg for seg in built if seg.get("type") != "face"]
+            if len(stripped) == len(built):
+                raise
+            payload["message"] = stripped
+            log_.warning("表情发不出去，去掉表情重发（%s）", conv_id)
+            await self._post_message(url, payload, headers)
+
+    async def _post_message(self, url: str, payload: dict[str, Any], headers: dict[str, str]) -> None:
         assert self._session is not None
         async with self._session.post(url, json=payload, headers=headers, timeout=20) as resp:
             body = await resp.text()
