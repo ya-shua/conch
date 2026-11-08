@@ -22,3 +22,4 @@ scripts/window_guard.py
 scripts/fix_integrity.ps1
 
 tests/.conch_plugin_dir
+scripts/privacy_words.local.txt

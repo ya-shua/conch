@@ -47,13 +47,21 @@ BLOCKED_FILES = re.compile(
 )
 
 # 明确正常的数字：毫秒、字节、常见端口、测试假号
-# 一律算隐私的称呼/账号名（按需加，别把通用词加进来）
-BLOCKED_WORDS = (
-    "阿鱼",
-    "项目根",
-    "QQ阿鱼",
-    "dady",
-)
+# 敏感词不写在这里：仓库是公开的，把要屏蔽的昵称列出来等于自己泄一遍。
+# 本机把词放进 scripts/privacy_words.local.txt（已 gitignore），一行一个；
+# 仓库里只留 privacy_words.example.txt。
+WORDS_FILE = ROOT / "scripts" / "privacy_words.local.txt"
+
+
+def blocked_words() -> tuple[str, ...]:
+    """本机词表；没有这个文件就只靠结构规则（号码、路径、key）。"""
+    if not WORDS_FILE.exists():
+        return ()
+    try:
+        lines = WORDS_FILE.read_text(encoding="utf-8-sig").splitlines()
+    except Exception:
+        return ()
+    return tuple(line.strip() for line in lines if line.strip() and not line.strip().startswith("#"))
 
 BENIGN_NUMBERS = {
     "10000", "20000", "123456", "100644", "100755", "1700000000", "45000", "30000", "30000", "50000", "60000", "90000", "100000",
@@ -105,7 +113,7 @@ def rule_keys(text: str) -> list[tuple[int, int, str]]:
 def rule_words(text: str) -> list[tuple[int, int, str]]:
     """昵称、账号名一类，出现就算隐私。"""
     out = []
-    for word in BLOCKED_WORDS:
+    for word in blocked_words():
         for line, col, value in _hits(re.compile(re.escape(word)), text):
             out.append((line, col, value))
     return out
