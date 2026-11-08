@@ -97,13 +97,20 @@ def tracked() -> list[str]:
 
 
 def section(ver: str) -> str:
+    """取 CHANGELOG 里对应版本那一段；没有版本号段落时退回最上面一段。"""
     text = (ROOT / "CHANGELOG.md").read_text(encoding="utf-8")
     head = f"## v{ver}"
     at = text.find(head)
+    marker = "\n## "
     if at < 0:
-        return ""
+        at = text.find("\n## ")
+        if at < 0:
+            return ""
+        at += 1
+        head = "## "
+        marker = "\n## "
     body = text[at:]
-    cut = body.find("\n## v", len(head))
+    cut = body.find(marker, len(head))
     return (body[:cut] if cut != -1 else body).strip()
 
 
