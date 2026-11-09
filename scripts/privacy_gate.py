@@ -128,7 +128,7 @@ def rule_qq_bare(text: str) -> list[tuple[int, int, str]]:
             continue
         at = _offset(text, line, col)
         # 冒号后面只放过「端口/时间」这一种可能：65535 以内。
-        # 以前一律放过，于是 "private:3102849732" 这种 conv_id 被当成 host:port
+        # 以前一律放过，于是 "private:<主人QQ>" 这种 conv_id 被当成 host:port
         # 溜过去了（2026-11-10 就是这样漏掉了文档里的主人 QQ）。
         if at and text[at - 1] in ":/":
             try:
