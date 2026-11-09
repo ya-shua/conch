@@ -188,7 +188,10 @@ class OneBotClient:
         built = []
         for seg in segments:
             if seg.type == "text":
-                built.append({"type": "text", "data": {"text": escape_cq(str(seg.data.get("text", "")))}})
+                body = str(seg.data.get("text", ""))
+                if not body.strip():
+                    continue
+                built.append({"type": "text", "data": {"text": escape_cq(body)}})
             elif seg.type == "at":
                 qq = norm_id(seg.data.get("qq"))
                 if qq == "all":
@@ -196,6 +199,12 @@ class OneBotClient:
                 built.append({"type": "at", "data": {"qq": qq}})
             else:
                 built.append({"type": seg.type, "data": seg.data})
+
+        if not built:
+            # 空消息会被协议端拒成 message segment array must not be empty。
+            # 到这一步说明上面该跳的都跳过了，直接不发。
+            log_.debug("没有可发的内容，跳过（%s）", conv_id)
+            return
 
         url = f"{self.cfg.onebot.http_url}/{action}"
         payload = {params_key: int(target) if target.isdigit() else target, "message": built}
@@ -216,6 +225,10 @@ class OneBotClient:
             stripped = [seg for seg in built if seg.get("type") != "face"]
             if len(stripped) == len(built):
                 raise
+            if not stripped:
+                # 整条就是一个表情：摘掉就什么都不剩了，别发空消息
+                log_.warning("整条只有表情，没法发，跳过（%s）", conv_id)
+                return
             payload["message"] = stripped
             log_.warning("表情发不出去，去掉表情重发（%s）", conv_id)
             await self._post_message(url, payload, headers)

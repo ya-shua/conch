@@ -68,3 +68,19 @@ def test_other_errors_are_not_retried():
     else:
         raise AssertionError("不该吞掉别的错误")
     assert len(sess.calls) == 1
+
+
+def test_empty_message_is_not_sent():
+    """整条只剩空文本时别发：协议端会回 message segment array must not be empty。"""
+    client, sess = make_client([])
+    asyncio.run(client.send("private:123", [Segment("text", {"text": "   "})]))
+    assert sess.calls == []
+
+
+def test_face_only_message_rejected_does_not_post_empty():
+    """整条就是一个表情、协议端又不认：摘掉就空了，不许发空消息。"""
+    bad = '{"status":"failed","wording":"OIDB error 11000 sysemojis cfg not found"}'  # privacy-ok: 11000 是错误码
+    client, sess = make_client([bad])
+    asyncio.run(client.send("private:123", [Segment("face", {"id": "45"})]))
+    assert len(sess.calls) == 1, "失败了就失败，别再发一条空的"
+    assert sess.calls[0]["message"] == [{"type": "face", "data": {"id": "45"}}]

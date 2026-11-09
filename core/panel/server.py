@@ -9,6 +9,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import os
 import re
 import secrets
 import shutil
@@ -54,7 +55,14 @@ def _token_ok(request: web.Request, expected: str) -> bool:
 AUTH_FILE = "panel_auth.json"
 SESSION_COOKIE = "conch_session"
 SESSION_DAYS = 30
-OPEN_PATHS = ("/", "/api/login", "/api/auth")
+OPEN_PATHS = (
+    "/",
+    "/api/login",
+    "/api/auth",
+    # 只读、无隐私的两个契约端点：探活和「我是谁」。别人接的时候不该先要令牌。
+    "/api/health",
+    "/api/manifest",
+)
 _PBKDF2_ROUNDS = 200_000
 
 
@@ -198,6 +206,56 @@ async def api_status(request: web.Request) -> web.Response:
             "integrity": _integrity_level(),
         }
     )
+
+
+async def api_health(request: web.Request) -> web.Response:
+    """契约端点（docs/插件对接契约.md）：只报「进程活着」。"""
+    state = request.app["state"]
+    return web.json_response(
+        {
+            "ok": True,
+            "id": "conch",
+            "version": CONCH_VERSION,
+            "uptime_s": round(time.time() - state["started_at"], 1),
+        }
+    )
+
+
+async def api_manifest(request: web.Request) -> web.Response:
+    """我是谁、有哪些能力、怎么调 —— 让别的宿主/工具不读代码也能接上。"""
+    app = request.app
+    meta = {}
+    try:
+        meta_path = _meta_path()
+        if meta_path and meta_path.exists():
+            meta = json.loads(meta_path.read_text(encoding="utf-8-sig"))
+    except Exception:
+        meta = {}
+    return web.json_response(
+        {
+            "ok": True,
+            "metadata": meta,
+            "runtime": {
+                "port": int(getattr(app["cfg"].panel, "port", 7801) or 7801),
+                "pid": os.getpid(),
+                "started_at": time.strftime("%Y-%m-%dT%H:%M:%S%z"),
+                "uptime_s": round(time.time() - app["state"]["started_at"], 1),
+            },
+            "capabilities": [
+                {"name": "说话（人格 + 称呼 + 表情包）", "kind": "event", "how": "接 OneBot 消息"},
+                {"name": "插件加载与一键启停", "kind": "http", "how": "POST /api/plugins/{pid}/toggle"},
+                {"name": "主动开口（替插件说话）", "kind": "http", "how": "POST /api/proactive/say"},
+                {"name": "记忆与用量", "kind": "http", "how": "GET /api/messages、/api/usage/summary"},
+                {"name": "面板与设置", "kind": "http", "how": "GET /api/settings、/api/plugins"},
+            ],
+        }
+    )
+
+
+def _meta_path():
+    from pathlib import Path
+
+    return Path(__file__).resolve().parent.parent.parent / "plugins" / "conch" / "metadata.json"
 
 
 def _display_names(app) -> dict[str, str]:
@@ -2142,6 +2200,94 @@ async def ping_js(request: web.Request) -> web.Response:
     )
 
 
+async def _proactive_report(state: dict[str, Any], url: str, body: dict[str, Any],
+                            timeout: float) -> None:
+    """把「说成了没有」回执给请求方。失败就记日志，不抛。"""
+    if not url:
+        return
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                url, json=body, timeout=aiohttp.ClientTimeout(total=timeout)
+            ) as resp:
+                await resp.read()
+                if resp.status >= 400:
+                    log_.warning("主动开口回执被拒：HTTP %s", resp.status)
+    except Exception as exc:  # noqa: BLE001 - 回执不到不该影响她已经说出口的话
+        log_.warning("主动开口回执失败：%s", exc)
+
+
+async def _run_proactive(state: dict[str, Any], speaker, payload: dict[str, Any],
+                         report_url: str, timeout: float) -> None:
+    event_id = str(payload.get("event_id") or "")
+    try:
+        result = await speaker(payload)
+        result = result if isinstance(result, dict) else {"ok": False, "error": "说话那边没回结果"}
+    except Exception as exc:  # noqa: BLE001
+        log_.warning("主动开口出错：%s", exc)
+        result = {"ok": False, "error": str(exc)[:160]}
+    body = {
+        "event_id": event_id,
+        "sent": bool(result.get("sent")),
+        "text": str(result.get("text") or ""),
+        "error": str(result.get("error") or ""),
+    }
+    log_.info("主动开口 %s：%s", "成了" if body["sent"] else "没成",
+              (body["text"] or body["error"])[:60])
+    await _proactive_report(state, report_url, body, timeout)
+
+
+async def api_proactive_say(request: web.Request) -> web.Response:
+    """宿主端点：插件说「我想找他说句话」，这里替她用自己的嘴说。
+
+    契约（跟 Tide 无关，任何插件都能接）：
+        POST /api/proactive/say
+        {"event_id","why","urgency","needs","person","conv_id"?,"report_url"}
+        → {"ok": true, "accepted": true}    接了，后台说，说完往 report_url 回执
+        → {"ok": false, "error": "..."}      不接
+
+    这里只负责「接住」并立刻返回：真说话要跑一次模型，几秒钟，
+    不能让上游的 5 秒超时把它掐掉。
+    """
+    state = request.app["state"]
+    cfg = request.app["cfg"]
+    try:
+        data = await request.json()
+    except Exception:
+        return web.json_response({"ok": False, "error": "要 JSON"}, status=400)
+    if not isinstance(data, dict):
+        return web.json_response({"ok": False, "error": "要 JSON 对象"}, status=400)
+
+    block = dict(getattr(cfg, "proactive", None) or {})
+    if not block.get("enabled", False):
+        return web.json_response(
+            {"ok": False, "error": "海螺没开主动开口（config.proactive.enabled）"}
+        )
+    services = state.get("services") or {}
+    speaker = services.get("proactive")
+    if speaker is None:
+        return web.json_response(
+            {"ok": False, "error": "没有插件提供主动开口（说话插件没加载？）"}
+        )
+
+    conv_id = str(data.get("conv_id") or block.get("conv_id") or "").strip()
+    if not conv_id:
+        # 没指定就发给第一个称呼卡的私聊 —— 她主动说话本来就是冲他一个人
+        owner = (cfg.owner_ids or [""])[0]
+        if owner:
+            conv_id = f"private:{owner}"
+    if not conv_id:
+        return web.json_response({"ok": False, "error": "没给发给谁（config.proactive.conv_id）"})
+
+    payload = dict(data)
+    payload["conv_id"] = conv_id
+    payload.setdefault("why", "")
+    report_url = str(data.get("report_url") or block.get("report_url") or "")
+    timeout = float(block.get("report_timeout_sec") or 8)
+    asyncio.create_task(_run_proactive(state, speaker, payload, report_url, timeout))
+    return web.json_response({"ok": True, "accepted": True, "conv_id": conv_id})
+
+
 def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Application:
     app = web.Application(middlewares=[guard])
     app["cfg"] = cfg
@@ -2150,6 +2296,8 @@ def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Applica
     app.router.add_get("/", index)
     app.router.add_get("/ping.js", ping_js)
     app.router.add_get("/api/status", api_status)
+    app.router.add_get("/api/health", api_health)
+    app.router.add_get("/api/manifest", api_manifest)
     app.router.add_get("/api/plugins", api_plugins)
     app.router.add_post("/api/plugins/check-updates", api_plugins_check_updates)
     app.router.add_post("/api/plugins/{pid}/update", api_plugin_apply_update)
@@ -2207,6 +2355,7 @@ def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Applica
     app.router.add_post("/api/launchers/{id}/restart", api_launcher_restart)
     app.router.add_get("/api/launchers/{id}/log", api_launcher_log)
     app.router.add_post("/api/launchers/stop-all", api_launcher_stop_all)
+    app.router.add_post("/api/proactive/say", api_proactive_say)
     app.router.add_post("/api/shutdown", api_shutdown)
     app.router.add_get("/api/auth", api_auth)
     app.router.add_post("/api/login", api_login)

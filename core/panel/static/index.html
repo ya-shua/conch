@@ -1720,9 +1720,13 @@ async function loadPlugins() {
   ]);
   const all = plugRes.plugins || [];
   const core = all.find((p) => p.id === "conch");
-  // 海螺就是工作台本身，不列在自己的插件里 —— 上面那行 coreLine 已经说明它是什么
-  const mine = all.filter((p) => p.id !== "conch");
-  const externals = launchRes.items || [];
+  // 这两类不摆成插件卡：
+  //   conch —— 海螺本体/说话插件，工作台就是它，上面那行 coreLine 已经说明；
+  //   mood  —— 汐接进宿主的桥，情绪那张卡（汐 Tide）代表它就够了，不然会看着像两个情绪。
+  // 启动项也要一起滤掉：否则它被当成「独立应用」又画一张卡，页面上就多出一个「海螺本体」。
+  const HIDDEN_IDS = new Set(["conch", "mood"]);
+  const mine = all.filter((p) => !HIDDEN_IDS.has(p.id));
+  const externals = (launchRes.items || []).filter((it) => !HIDDEN_IDS.has(it.id));
 
   const updatable = all.filter((p) => p.update && p.update.has_update);
   const banner = $("updBanner");

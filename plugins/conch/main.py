@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import asyncio
+import contextvars
 import json
 import random
 import shutil
@@ -53,10 +54,29 @@ def system_prompt(ctx) -> str:
 
 
 _CQ_RE = re.compile(r"\[CQ:([a-zA-Z_]+)((?:,[^\]]*)?)\]")
+# 模型手滑写歪的 CQ 码（[CQ:face:undefined]、[CQ:face id=3] 这种）：
+# 上面那个正则匹配不到，会原样漏到 QQ 里变成 "[CQ:face:undefined]"。
+# 宁可少一个表情，也绝不把这串东西当话说出去。
+_CQ_JUNK_RE = re.compile(r"\[\s*CQ\s*[:：][^\]\n]*\]", re.I)
+
+# 这一轮在跟哪个会话说话：工具里要发语音，得知道发给谁（v.say 不经过她的嘴）
+_CURRENT_CONV: "contextvars.ContextVar[str]" = contextvars.ContextVar(
+    "conch_conv", default=""
+)
+
+# 这一轮的心情（汐给的结构化语音参数）：instruct / speed / pitch（半音）。
+# 她说话时由海螺自动带进声来，她自己不用挑"情绪档"。
+_CURRENT_VOICE: "contextvars.ContextVar[dict]" = contextvars.ContextVar(
+    "conch_voice", default={}
+)
 
 # 模型想发表情时写的一行： 【表情包：猫猫-歪头】 / [表情：x]
 _STICKER_LINE = re.compile(r"^[【\[]\s*表\s*情(?:包)?\s*[:：]\s*(.+?)\s*[】\]]$")
 _STICKER_ANY = re.compile(r"[【\[]\s*表\s*情(?:包)?\s*[:：][^】\]]*[】\]]")
+
+# 括号里的「心里话」：（这气氛咋回事 有点绷不住了 我缓缓）
+# 人设写得出来，但那是在自己脑子里；发到 QQ 上像剧本旁白，看着出戏 —— 发之前摘掉。
+_ASIDE_RE = re.compile(r"[（(][^（()）\n]{0,200}[）)]")
 
 # 模型发语音时写的一行：<audio src="<语音文件路径>\\x.wav"></audio>
 # voice_tts 只返回文件路径，模型不会自己拼 record 段，所以这里把标签翻成真语音。
@@ -248,7 +268,11 @@ def seed_history(ctx, conv_id: str, skip_ids: set[str], owner: str = "",
 
 
 def to_segments(text: str) -> list[Segment]:
-    """把模型吐出来的 CQ 码还原成真正的表情段，其余 CQ 码直接丢掉。"""
+    """把模型吐出来的 CQ 码还原成真正的表情段，其余 CQ 码直接丢掉。
+
+    返回**可能是空的**：整条都是表情/坏码时说明没话可说，调用方要跳过这一行，
+    别拿原文兜底 —— 那样 `[CQ:face:undefined]` 就真发到聊天窗口里了。
+    """
     out: list[Segment] = []
     pos = 0
     for match in _CQ_RE.finditer(text):
@@ -261,8 +285,9 @@ def to_segments(text: str) -> list[Segment]:
             if "=" in item:
                 k, v = item.split("=", 1)
                 params[k.strip()] = v.strip()
-        if kind == "face" and params.get("id"):
-            out.append(Segment("face", {"id": params["id"]}))
+        face_id = str(params.get("id") or "").strip()
+        if kind == "face" and face_id.isdigit():
+            out.append(Segment("face", {"id": face_id}))
         elif kind == "text" and params.get("text"):
             out.append(Segment("text", {"text": params["text"]}))
         pos = match.end()
@@ -270,8 +295,15 @@ def to_segments(text: str) -> list[Segment]:
     if tail:
         out.append(Segment("text", {"text": tail}))
 
-    cleaned = [seg for seg in out if seg.type != "text" or seg.data.get("text")]
-    return cleaned or [Segment("text", {"text": text})]
+    cleaned: list[Segment] = []
+    for seg in out:
+        if seg.type == "text":
+            body = _CQ_JUNK_RE.sub("", str(seg.data.get("text") or "")).strip()
+            if body:
+                cleaned.append(Segment("text", {"text": body}))
+        else:
+            cleaned.append(seg)
+    return cleaned
 
 
 def _as_card(card) -> dict:
@@ -511,6 +543,8 @@ async def setup(ctx) -> None:
     await _setup_tools(ctx)
     asyncio.create_task(_pull_groups_when_ready(ctx))
     ctx.services["catch_up"] = asyncio.create_task(_catch_up(ctx))
+    # 主动开口：别的插件（心情/汐）说「我想找他说句话」时，这里替她说
+    ctx.services["proactive"] = lambda payload: speak_proactive(ctx, payload)
     ctx.log.info("海螺就绪（合流窗口 %sms，表情包 %s）",
                  ctx.cfg.merge_window_ms,
                  "接上" if ctx.services.get("stickers") is not None else "没接")
@@ -608,7 +642,83 @@ async def _setup_tools(ctx) -> None:
         ctx.log.warning("工具接入失败：%s", exc)
 
 
+# ── 语音产出：工具只负责合成，发出去是海螺的事 ──────────────────
+#
+# 以前的毛病：声来只返回文件路径，返回文案还写着「把路径发给用户即可播放」，
+# 模型读完就以为给过了；就算她老实抄路径，抄错一个字符 send_voice 就静默跳过，
+# 而她的文字已经说出去了。所以现在：工具返回里认AUDIO 行 → 海螺自己发 →
+# 把结果改写成真话（发出去了 / 没发出去），不让她猜。
+
+_AUDIO_LINE_RE = re.compile(r"^[ \t]*AUDIO[ \t]*[:：][ \t]*(.+?)[ \t]*$", re.I | re.M)
+_FILE_LINE_RE = re.compile(r"^[ \t]*文件[ \t]*[:：][ \t]*(.+?)[ \t]*$", re.M)
+_AUDIO_EXT = (".wav", ".mp3", ".m4a", ".silk", ".amr", ".ogg")
+
+
+def audio_path_of(text: str) -> str:
+    """从工具返回里取音频文件：先认 AUDIO 行，再退一步认「文件:」行。
+
+    按行取整行，不做正则"猜路径"——文件名里的空格、·、中文都不会断。
+    """
+    raw = str(text or "")
+    for rx in (_AUDIO_LINE_RE, _FILE_LINE_RE):
+        match = rx.search(raw)
+        if not match:
+            continue
+        path = match.group(1).strip().strip('"').strip("'")
+        if path.lower().endswith(_AUDIO_EXT):
+            return path
+    return ""
+
+
+def mood_voice_args(base: dict) -> dict:
+    """这一轮的心情 → 声来参数。她自己给的优先，没给才用心情的。
+
+    汐给的是 speed（倍率）、pitch（半音）、instruct（语气描述）；
+    声来的 pitch 是乘数，所以要 2^(半音/12)。
+    """
+    args = dict(base or {})
+    mood = _CURRENT_VOICE.get() or {}
+    try:
+        speed = float(mood.get("speed") or 0)
+    except (TypeError, ValueError):
+        speed = 0.0
+    if speed and "rate" not in args:
+        args["rate"] = round(speed, 3)
+    try:
+        semis = float(mood.get("pitch") or 0)
+    except (TypeError, ValueError):
+        semis = 0.0
+    if semis and "pitch" not in args:
+        args["pitch"] = round(2.0 ** (semis / 12.0), 3)
+    style = str(mood.get("instruct") or "").strip()
+    if style and "style" not in args and "emotion" not in args:
+        args["style"] = style
+    return args
+
+
+async def deliver_audio(ctx, result: str) -> str:
+    """工具给了音频文件就当场发出去，返回改写后的结果（她看到的必须是真话）。"""
+    path = audio_path_of(result)
+    if not path:
+        return result
+    conv = _CURRENT_CONV.get()
+    if not conv:
+        ctx.log.warning("工具产出了语音，但不知道发给谁：%s", path)
+        return "（海螺不知道该把这条语音发给谁，所以没发出去。）"
+    if await send_voice(ctx, conv, path):
+        return "（海螺已经把它发成一条语音了，对方听得到。）"
+    return "（海螺发语音失败了，没发出去。别跟人说你发了。）"
+
+
 async def teardown(ctx) -> None:
+    toolbox = None
+    if getattr(ctx, "services", None):
+        toolbox = ctx.services.get("tools")
+    if toolbox is not None:
+        try:
+            toolbox.unregister_owner("conch")
+        except Exception:
+            pass
     task = ctx.services.pop("catch_up", None)
     if task is not None:
         task.cancel()
@@ -781,7 +891,13 @@ async def talk(
     backend = ctx.services["backend"]
     pool = ctx.services.get("mcppool")
     toolbox = ctx.services.get("tools")
-    tools = list(pool.tools_for(scope)) if pool is not None else []
+    # 这一轮要给的话（最后一条 user）：某些工具按话里的词临时给，见 core/mcp.py 的 when/extra
+    said = ""
+    for item in reversed(messages or []):
+        if str(item.get("role") or "") == "user":
+            said = str(item.get("content") or "")
+            break
+    tools = list(pool.tools_for(scope, said)) if pool is not None else []
     if toolbox is not None:
         tools.extend(toolbox.specs())
     if extra_tools:
@@ -818,6 +934,9 @@ async def talk(
                 args = {}
             ctx.log.info("调工具 %s(%s)", name, str(args)[:120])
             payload = args if isinstance(args, dict) else {}
+            if name == "voice_speak":
+                # 把她这一轮的心情带进声音：语速/音高/语气，她自己不用挑
+                payload = mood_voice_args(payload)
             result = None
             if toolbox is not None:
                 result = await toolbox.call(name, payload)
@@ -828,6 +947,9 @@ async def talk(
                     result = f"没有这个工具：{name}"
                 else:
                     result = await pool.call(name, payload)
+            if name in ("voice_speak", "voice_sing") and isinstance(result, str):
+                # 声来只出文件；发出去、成没成，都在这儿定，返回给她的就是真话
+                result = await deliver_audio(ctx, result)
             msgs.append(
                 {"role": "tool", "tool_call_id": str(call.get("id") or ""), "content": result}
             )
@@ -850,6 +972,100 @@ async def talk(
     for k in total:
         total[k] += int(usage.get(k) or 0)
     return str(message.get("content") or "").strip(), total
+
+
+PROACTIVE_NUDGE = (
+    "（这会儿没人跟你说话，是你自己想起来找他。"
+    "按你此刻的心情，说一句你会主动说的话。"
+    "要求：像平时聊天，一两句就够，短；不解释你为什么会想他，不汇报行踪，不写小作文。"
+    "只有真想说才说，不想说话就记得那是你自己的事。）"
+)
+
+
+async def speak_proactive(ctx, payload: dict) -> dict:
+    """替她主动说一句 —— 别人（心情插件/汐）判断「她想找人说话」时调这里。
+
+    契约跟哪个插件无关，见 docs/主动开口.md：
+        payload: {conv_id, why?, urgency?, needs?, person?, event_id?}
+        return : {ok, sent, text, error}
+
+    为什么要走这一条，而不是让 Tide 自己发：**她的人设在这里**。
+    自己发只能拼模板句，而且那句不在她的对话历史里——你说「啥？」她接不上。
+    """
+    conv_id = str(payload.get("conv_id") or "").strip()
+    if not conv_id:
+        return {"ok": False, "sent": False, "error": "没给 conv_id"}
+    if not allowed(ctx.cfg, conv_id, ""):
+        return {"ok": False, "sent": False, "error": f"{conv_id} 不在白名单"}
+
+    sender_id = conv_id.split(":", 1)[1] if ":" in conv_id else ""
+    kind = "group" if conv_id.startswith("group:") else "private"
+    why = str(payload.get("why") or "").strip()
+    nudge = PROACTIVE_NUDGE if not why else f"{PROACTIVE_NUDGE}（当下：{why}）"
+
+    async with turn_lock(conv_id):
+        history = load_history(ctx, conv_id, set(), ctx.cfg)
+        system = system_prompt(ctx) + lexicon_block(ctx) + voice_hint(ctx)
+        if kind == "group":
+            system += group_format_hint()
+        system += await ask_prompt_extra(
+            ctx, conv_id, nudge, feature="proactive", sender_id=sender_id
+        )
+        messages = [
+            {"role": "system", "content": system},
+            *history,
+            {"role": "user", "content": nudge},
+        ]
+        try:
+            _CURRENT_CONV.set(conv_id)
+            reply, usage = await talk(ctx, messages, "all")
+        except Exception as exc:  # noqa: BLE001 - 失败要如实回报，不能装成说过了
+            ctx.log.warning("主动开口：模型调用失败 %s", exc)
+            return {"ok": False, "sent": False, "error": f"模型调用失败：{exc}"}
+
+        if not reply:
+            ctx.log.info("主动开口：模型没说话")
+            return {"ok": False, "sent": False, "error": "模型没说话"}
+
+        ok, why_not = await ask_gate(ctx, conv_id, reply, feature="proactive",
+                                     sender_id=sender_id)
+        if not ok:
+            return {"ok": False, "sent": False, "error": str(why_not or "被拦下")}
+
+        try:
+            await send_lines(ctx, conv_id, reply)
+        except Exception as exc:  # noqa: BLE001
+            ctx.log.warning("主动开口：发送失败 %s", exc)
+            return {"ok": False, "sent": False, "error": f"发送失败：{exc}"}
+
+        turn_id = f"proactive-{int(time.time() * 1000)}"
+        _ = asyncio.create_task(remember_own(ctx, conv_id, reply, turn_id))
+        try:
+            ctx.store.message_add(conv_id, "out", reply, plugin_id=ctx.id)
+        except Exception as exc:
+            ctx.log.warning("主动开口：写记录失败 %s", exc)
+        keep = [
+            line.strip()
+            for line in re.split(
+                r"\n+", _AUDIO_TAG.sub("[语音]", _STICKER_ANY.sub("", reply))
+            )
+            if line.strip()
+        ]
+        if len(keep) > 3:
+            keep = keep[:2] + [" ".join(keep[2:])]
+        hkey = history_key(ctx.cfg, conv_id)
+        remember_turn(hkey, "user", nudge)
+        remember_turn(hkey, "assistant", "\n".join(keep))
+        mark_replied(conv_id)
+        ctx.ledger.record(
+            feature="proactive",
+            conv_id=conv_id,
+            turn_id=turn_id,
+            model=ctx.cfg.model.model,
+            usage=usage,
+        )
+        ctx.log.info("主动开口（%s）：%s", why or "想他了", reply[:40])
+        return {"ok": True, "sent": True, "text": reply}
 
 
 def needs_approval(ctx, text: str) -> bool:
@@ -902,6 +1118,14 @@ async def ask_prompt_extra(
         await ctx.bus.emit("speech.prompt", payload)
     except Exception as exc:
         ctx.log.warning("speech.prompt 出错：%s", exc)
+    # 汐把这一句该用的语音参数放在 payload["plan"]["voice"] 里；
+    # 以前只取了 extra 那段文字，速度/音高/语气当场就丢了 —— 现在存下来给声来用。
+    plan = payload.get("plan")
+    voice = plan.get("voice") if isinstance(plan, dict) else None
+    if isinstance(voice, dict):
+        _CURRENT_VOICE.set(dict(voice))
+    else:
+        _CURRENT_VOICE.set({})
     return str(payload.get("extra") or "")
 
 
@@ -1218,6 +1442,7 @@ async def send_lines(ctx, conv_id: str, text: str) -> None:
                     ctx.log.info("表情没发出去，跳过这一行：「%s」", hint)
                 continue
             clean = _STICKER_ANY.sub("", part).strip()
+            clean = _ASIDE_RE.sub("", clean).strip()
             if not clean:
                 continue
             if sent_any:
@@ -1231,7 +1456,13 @@ async def send_lines(ctx, conv_id: str, text: str) -> None:
                     gap = min(gap, cap)
                 if gap > 0:
                     await asyncio.sleep(gap)
-            await ctx.send(conv_id, to_segments(clean))
+            segs = to_segments(clean)
+            if not segs:
+                # 整行只有一个坏码/表情时没话可说：跳过，别发空消息
+                # （空 message 会被协议端拒成 message segment array must not be empty）
+                ctx.log.info("这一行只有码没有话，跳过：「%s」", clean[:40])
+                continue
+            await ctx.send(conv_id, segs)
             sent_any = True
 
 
@@ -1411,6 +1642,9 @@ VOICE_MARK = "[语音转写] "
 VOICE_RULE = (
     "带「语音转写」的消息是机器听出来的，可能有错字：按上下文顺着理解（名字、常用词明显听错的，"
     "按对的理解），别把错字当原话；但顺字不能改意思，时间、数字、要做的事拿不准就问一句。"
+    "表情不要自己拼代码：不要写 [CQ:face,id=…] 这类东西（写歪了会原样变成一串乱码），"
+    "想发表情就单独占一行写「【表情包：意思】」，只写意思，别在那个括号里再加解释。"
+    "心里想的话不用打出来给别人看：不要写「（……）」这种括号旁白，那是在自己脑子里。"
 )
 
 _ASR_CACHE: dict = {"key": None, "cfg": None}
@@ -1924,6 +2158,7 @@ async def run_turn(ctx, batch: list[Message]) -> None:
             return await call_send_tool(ctx, args)
 
     try:
+        _CURRENT_CONV.set(conv_id)
         reply, usage = await talk(
             ctx, messages, "owner" if remote else "all", extra_tools, extra_call
         )

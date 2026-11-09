@@ -70,7 +70,14 @@ def _spawn(argv: list[str]) -> subprocess.Popen:
 
 
 def status() -> dict | None:
-    """面板活着就返回 /api/status，否则 None。"""
+    """面板活着就返回 /api/status，否则 None。
+
+    先探端口再问 HTTP：面板不在的时候 urlopen 会等满 2 秒（系统代理还会更久），
+    而看门狗每 5 秒问一次 —— 那点白等就是「点了图标半天没反应」的一部分。
+    """
+    port = int((cfg().get("panel") or {}).get("port") or 7801)
+    if not port_open(port):
+        return None
     url = panel_url().split("?")[0] + "api/status"
     token = str((cfg().get("panel") or {}).get("token") or "")
     try:
@@ -236,9 +243,12 @@ def stop_services() -> None:
     """全停：海螺 + 所有外部服务。托盘退出时才会走这里。"""
     log("停全家桶")
     try:
+        env = dict(os.environ)
+        # 告诉 stop_all：托盘已经在退了，别再反过来等我 —— 否则两边互等
+        env["CONCH_TRAY_QUITTING"] = "1"
         subprocess.run(
             [str(PYTHON), str(ROOT / "scripts" / "stop_all.py")],
-            cwd=str(ROOT), timeout=90,
+            cwd=str(ROOT), timeout=90, env=env,
             stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
             creationflags=NO_WINDOW,
         )
@@ -373,16 +383,31 @@ def main() -> int:
 
         icon = pystray.Icon("conch", image, "海螺", menu)
 
+        def _open_when_ready(limit: float = 75.0) -> None:
+            """面板一能应答就把页面打开。
+
+            以前是「等服务全齐（7~10 秒）再开页面」，这几秒里点是没反应的；
+            现在页面先弹出来，面板自己会显示加载中。
+            """
+            t0 = time.time()
+            while time.time() - t0 < limit:
+                if status() is not None:
+                    open_once()
+                    return
+                time.sleep(0.2)
+            log("等面板超时，还是试着打开")
+
         def boot() -> None:
             # ⚠️ 自定义 setup 必须自己把 visible 打开，否则 pystray 注册完就是「看不见的图标」：
             # 窗口建出来了、Shell_NotifyIcon 也登记了，但通知区域里什么都不显示。
             icon.visible = True
-            # 先把服务拉起来；本来就是自己起的（不是别人已经在跑），才顺手开面板
+            # 本来就是自己起的（不是别人已经在跑），才顺手开面板
             was_down = status() is None
+            if was_down:
+                # 边起服务边等面板：一可用就开，不等全部服务
+                threading.Thread(target=_open_when_ready, daemon=True).start()
             start_services()
             refresh()
-            if was_down:
-                open_panel()
             # 守着：本体要是崩了/被关了，图标还在这儿，就把它拉回来。
             # 这样"图标在 = 服务在"才立得住；只有菜单「退出」才会真的全停。
             misses = 0

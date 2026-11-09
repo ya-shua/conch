@@ -100,3 +100,19 @@ def test_approval_flow(tmp_path):
     assert s.approval_decide(aid, "approved") is True
     assert s.approval_list("pending") == []
     assert s.approval_decide(aid, "approved") is False  # 已经决定了
+
+def test_same_message_id_is_not_recorded_twice(tmp_path):
+    """宿主先落库、插件再补一次：同一条消息只能有一行。"""
+    s = make_store(tmp_path)
+    s.message_add("private:1", "in", "在吗", message_id="9001", plugin_id="host")
+    s.message_add("private:1", "in", "在吗（转写后）", message_id="9001", plugin_id="conch")
+    rows = [r for r in s.message_list("private:1", limit=10) if r["direction"] == "in"]
+    assert len(rows) == 1
+
+
+def test_out_messages_without_id_still_all_stored(tmp_path):
+    s = make_store(tmp_path)
+    s.message_add("private:1", "out", "第一句")
+    s.message_add("private:1", "out", "第一句")
+    rows = [r for r in s.message_list("private:1", limit=10) if r["direction"] == "out"]
+    assert len(rows) == 2

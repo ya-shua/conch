@@ -48,6 +48,13 @@ class McpServer:
         self.timeout_s = float(spec.get("timeout_s") or 60)
         self.scope = str(spec.get("scope") or "owner")  # owner = 只给主人私聊
         self.enabled = bool(spec.get("enabled", True))
+        # 工具按需给：
+        #   only  —— 平时就摆在她面前的几个（写了就是白名单，空列表 = 一个都不给）
+        #   when  —— 话里出现这些词，才把 extra 那批也临时摆出来
+        #   extra —— 平时藏起来的那批（配置/克隆/翻页这种，聊天里用不上）
+        self.only = [str(t) for t in spec["only"]] if "only" in spec else None
+        self.when = [str(w) for w in (spec.get("when") or [])]
+        self.extra = [str(t) for t in (spec.get("extra") or [])]
 
         self._proc: asyncio.subprocess.Process | None = None
         self._lock = asyncio.Lock()
@@ -181,9 +188,17 @@ class McpServer:
 
     # ── 对外 ──────────────────────────────────────────────
 
-    def tool_schemas(self) -> list[dict[str, Any]]:
+    def tool_schemas(self, with_extra: bool = False) -> list[dict[str, Any]]:
         out = []
         for tool in self._tools:
+            name = str(tool.get("name") or "")
+            if self.only is not None:
+                # 白名单模式（哪怕是空列表）：只给点过名的
+                hidden = name in self.extra and not with_extra
+                if hidden or name not in self.only:
+                    continue
+            elif name in self.extra and not with_extra:
+                continue
             out.append(
                 {
                     "type": "function",
@@ -244,14 +259,20 @@ class McpPool:
         for srv in self.servers.values():
             await srv.close()
 
-    def tools_for(self, scope: str) -> list[dict[str, Any]]:
-        """scope=owner 给全部；否则只给 scope=all 的那些。"""
+    def tools_for(self, scope: str, text: str = "") -> list[dict[str, Any]]:
+        """scope=owner 给全部；否则只给 scope=all 的那些。
+
+        text 是这一轮要回的话：某个 server 配了 when 关键词，命中就把它的 extra
+        工具一起摆出来（"帮我克隆个音色" 这种才需要看见那一批）。
+        """
         out: list[dict[str, Any]] = []
         self._owner.clear()
+        low = (text or "").lower()
         for srv in self.servers.values():
             if scope != "owner" and srv.scope != "all":
                 continue
-            for schema in srv.tool_schemas():
+            want_extra = bool(srv.when) and any(w.lower() in low for w in srv.when if w)
+            for schema in srv.tool_schemas(with_extra=want_extra):
                 name = schema["function"]["name"]
                 if name in self._owner:
                     continue

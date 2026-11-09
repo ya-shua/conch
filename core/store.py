@@ -370,6 +370,10 @@ class Store:
         ts: int | None = None,
     ) -> None:
         with self._lock:
+            if message_id and self._message_seen(conv_id, direction, message_id):
+                # 同一条消息会被两处写：宿主先落库（插件没在的时候也不丢），
+                # 插件跑完再补一次（可能带语音转写）。按 message_id 认，只留一条。
+                return
             self.conn.execute(
                 """
                 INSERT INTO messages(ts, conv_id, direction, sender_id, sender_name, text, message_id, plugin_id)
@@ -387,6 +391,17 @@ class Store:
                 ),
             )
             self.conn.commit()
+
+    def _message_seen(self, conv_id: str, direction: str, message_id: str) -> bool:
+        """这条（会话 + 方向 + 消息 id）是不是已经记过了。"""
+        try:
+            row = self.conn.execute(
+                "SELECT 1 FROM messages WHERE conv_id=? AND direction=? AND message_id=? LIMIT 1",
+                (conv_id, direction, message_id),
+            ).fetchone()
+            return row is not None
+        except Exception:
+            return False
 
     def message_list(
         self, conv_id: str | None = None, limit: int = 80, before_id: int | None = None

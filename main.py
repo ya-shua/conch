@@ -40,6 +40,20 @@ async def run(cfg: Config, cfg_path: str = "config.json") -> None:
     backend = OpenAICompatBackend(cfg)
 
     async def on_message(msg: Message) -> None:
+        # 先进库再分发：插件没加载（刚重启、被停用）的时候消息也不会凭空消失，
+        # 面板能看见「到底收到过什么」，补回机制也有东西可补。
+        try:
+            store.message_add(
+                msg.conv_id,
+                "in",
+                msg.text,
+                sender_id=msg.sender_id,
+                sender_name=msg.sender_name,
+                message_id=str(msg.message_id),
+                plugin_id="host",
+            )
+        except Exception as exc:
+            log_.warning("消息落库失败：%s", exc)
         await bus.emit("message.received", msg)
 
     onebot = OneBotClient(cfg, on_message)
@@ -75,6 +89,7 @@ async def run(cfg: Config, cfg_path: str = "config.json") -> None:
         "stickers": stickers,
         "look": look,
         "tools": tools,
+        "services": services,   # 插件往这里挂本事：主动开口 = services["proactive"]
         "started_at": time.time(),
     }
     app = create_app(cfg=cfg, state=state, cfg_path=cfg_path)
@@ -90,7 +105,11 @@ async def run(cfg: Config, cfg_path: str = "config.json") -> None:
     # 配置里点过名的插件开机就启用（面板上的开关记在这里）
     for pid in (cfg.raw.get("plugins_enabled") or []):
         pid = str(pid)
-        if pid in loader.metas and loader.status.get(pid) != "enabled":
+        meta = loader.metas.get(pid)
+        if meta is None or meta.kind == "app":
+            # 独立应用（汐、微光域、留影…）不是宿主插件，开关在启动器那边
+            continue
+        if loader.status.get(pid) != "enabled":
             try:
                 await loader.enable(pid)
             except Exception as exc:

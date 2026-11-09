@@ -1,0 +1,39 @@
+{
+  "id": "conch",
+  "name": "海螺",
+  "name_en": "Conch",
+  "version": "1.1.8",
+  "author": "ya-shua",
+  "description": "她在 QQ 上的耳朵和嘴：听谁的话、怎么回、花多少，以及把所有插件接起来（宿主本体，面板 7801）。",
+  "builtin": true,
+  "kind": "app",
+  "port": 7801,
+  "page": "http://127.0.0.1:7801/",
+  "launch": {
+    "runtime": "python",
+    "entry": "main.py",
+    "args": [
+      "--config",
+      "config.json"
+    ],
+    "note": "宿主本体：接 OneBot、加载插件、开面板 7801。",
+    "port": 7801,
+    "url": "http://127.0.0.1:7801/"
+  },
+  "capabilities": [
+    "说话：人格卡 + 称呼 + 表情包 + 语音",
+    "加载/启停别的插件，给它们提供 services",
+    "替插件主动开口（POST /api/proactive/say）",
+    "记忆与用量统计",
+    "面板与设置（7801）"
+  ],
+  "standalone": {
+    "works_alone": true,
+    "needs": [
+      "一个 OneBot 实现（SnowLuma）和已登录的 QQ",
+      "模型 key（config.json 的 model 段）"
+    ],
+    "how": "填好 config.json 的 model 和 onebot 段，python main.py --config config.json"
+  },
+  "contract": "docs/对接.md"
+}

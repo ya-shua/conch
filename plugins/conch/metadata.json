@@ -1,9 +1,23 @@
 {
   "id": "conch",
   "name": "海螺",
-  "version": "1.1.4",
+  "name_en": "Conch",
+  "version": "1.1.8",
   "author": "ya-shua",
-  "description": "她在 QQ 上的耳朵和嘴：听谁的话、怎么回、花多少",
+  "description": "在她耳边说话的那个插件：读消息、拼人设、调模型、发回去。宿主本体内置，不走 launchers。",
   "builtin": true,
-  "name_en": "Conch"
+  "kind": "plugin",
+  "capabilities": [
+    "收私聊/群聊消息并按人设回话",
+    "称呼卡、表情包、语音、引用回复",
+    "给别的插件提供 services（模型、QQ、记忆）"
+  ],
+  "standalone": {
+    "works_alone": false,
+    "needs": [
+      "必须由海螺宿主加载（setup(ctx)）"
+    ],
+    "how": "它是宿主内置插件，单独跑不了；要单独跑整个海螺见根目录 metadata.json"
+  },
+  "contract": "../docs/对接.md"
 }

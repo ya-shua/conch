@@ -142,6 +142,11 @@ class Loader:
                 except Exception as exc:
                     log_.warning("%s 的 config.json 读不了（用空配置）：%s", meta.id, exc)
                     meta.config = {}
+            if meta.id in self.metas:
+                # 两个目录撞了同一个 id（比如「汐」本体和它的 mood 插件都叫 tide）：
+                # 先扫到的那个赢，别让后扫到的把正在用的插件顶掉。
+                log_.warning("插件 id 撞车：%s（%s 被忽略）", meta.id, folder.name)
+                continue
             self.metas[meta.id] = meta
             self.status.setdefault(meta.id, STATUS_DISABLED)
         return list(self.metas.values())
@@ -229,6 +234,12 @@ class Loader:
     async def enable_all(self) -> None:
         for pid, meta in self.metas.items():
             if not meta.builtin:
+                continue
+            if meta.kind == "app":
+                # 独立应用（汐、微光域、留影…）：起停在启动器那边，不当宿主插件加载。
+                # 它们现在都带 metadata.json 且标了 kind=app，扫到就是列表里的一条，
+                # 但不是「插件启用失败」—— 别在日志里吓人。
+                log_.debug("跳过 %s：外部应用（%s），用启动器起", pid, meta.name)
                 continue
             try:
                 await self.enable(pid)

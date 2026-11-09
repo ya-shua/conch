@@ -135,6 +135,11 @@ class Config:
     plugins_dir: str = "plugins"
     plugin_paths: list[str] = field(default_factory=list)
     strategy: dict[str, Any] = field(default_factory=dict)
+    # 主动开口：别的插件（心情/汐）说「她想找人说句话」时，这里替她用自己的嘴说
+    #   enabled   总开关（默认关，得自己打开）
+    #   conv_id   发给谁，默认第一个称呼卡的私聊
+    #   report_url 说完往哪回执（插件一般会随请求带上来）
+    proactive: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
 
     @property
@@ -315,6 +320,19 @@ def load_config(path: str | Path) -> Config:
         port=int(panel_raw.get("port") or 7801),
         token=str(panel_raw.get("token") or ""),
     )
+
+    # 主动开口：默认关，得显式打开（她主动找你这件事，不能靠默认值自己生效）
+    pro_raw = raw.get("proactive")
+    if pro_raw is None:
+        pro_raw = {}
+    if not isinstance(pro_raw, dict):
+        raise ConfigError("proactive 必须是对象")
+    cfg.proactive = {
+        "enabled": bool(pro_raw.get("enabled", False)),
+        "conv_id": str(pro_raw.get("conv_id") or ""),
+        "report_url": str(pro_raw.get("report_url") or ""),
+        "report_timeout_sec": float(pro_raw.get("report_timeout_sec") or 8),
+    }
 
     legacy_ids = owner_ids_of(raw.get("owner_qq"))
     cfg.owner_qq = legacy_ids[0] if legacy_ids else ""

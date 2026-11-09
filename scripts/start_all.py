@@ -59,6 +59,14 @@ def port_open(port: int) -> bool:
 
 
 def host_up(url: str) -> bool:
+    """面板能应答吗。
+
+    先探端口（毫秒级）再问 HTTP：面板还没起来时直接 urlopen 会被系统代理拖到
+    1.5 秒才超时，一次启动要问两遍，光是这两下就是 3 秒白等。
+    """
+    port = int((cfg().get("panel") or {}).get("port") or 7801)
+    if not port_open(port):
+        return False
     try:
         req = urllib.request.Request(url.split("?")[0] + "api/status")
         req.add_header("x-console-token", str((cfg().get("panel") or {}).get("token") or ""))
@@ -136,10 +144,17 @@ def _launch_items() -> list[dict]:
 
 
 def start_services() -> tuple[list[str], list[str]]:
+    """先把所有服务都拉起来，再一起等端口。
+
+    以前是「起一个 → 等它端口最多 30 秒 → 起下一个」，7 个服务串着等，
+    实测开局就要 15 秒。现在端口等待是并行的：总耗时 ≈ 最慢的那一个。
+    """
     items = _launch_items()
     if not items:
         return [], []
     started, failed = [], []
+    pending: list[tuple[str, int, int]] = []      # (名字, 端口, pid)
+
     for item in items:
         name = item.get("name") or item.get("id")
         port = item.get("port")
@@ -161,17 +176,23 @@ def start_services() -> tuple[list[str], list[str]]:
             failed.append(f"{name}（{exc}）")
             continue
         if port:
-            ok = False
-            for _ in range(75):
-                time.sleep(0.4)
-                if port_open(int(port)):
-                    ok = True
-                    break
-            (started if ok else failed).append(
-                f"{name}（端口 {port}）" if ok else f"{name}（30 秒没等到端口 {port}，pid {pid}）"
-            )
+            pending.append((name, int(port), pid))
         else:
             started.append(f"{name}（pid {pid}）")
+
+    # 一次性等所有端口：总预算 30 秒（不是每个 30 秒）
+    deadline = time.time() + 30
+    while pending and time.time() < deadline:
+        time.sleep(0.25)
+        still = []
+        for name, port, pid in pending:
+            if port_open(port):
+                started.append(f"{name}（端口 {port}）")
+            else:
+                still.append((name, port, pid))
+        pending = still
+    for name, port, pid in pending:
+        failed.append(f"{name}（30 秒没等到端口 {port}，pid {pid}）")
     return started, failed
 
 
@@ -239,21 +260,17 @@ def main() -> int:
 
 
 def _guard_running() -> bool:
-    cmd = (
-        "Get-CimInstance Win32_Process -Filter \"Name='pythonw.exe'\" | "
-        "Where-Object { $_.CommandLine -match 'window_guard' } | "
-        "Select-Object -First 1 -ExpandProperty ProcessId"
-    )
+    """窗口守卫在不在：直接看它自己的锁文件里的 pid。
+
+    以前这里起一个 powershell 查命令行，冷启动要 1~2 秒 —— 一键启动就在这一段白等。
+    守卫本来就有单实例锁（data\\guard.lock），读它就够了；多起一个也不会重复干活。
+    """
+    lock = ROOT / "data" / "guard.lock"
     try:
-        out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command",
-             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + cmd],
-            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
-            creationflags=NO_WINDOW, startupinfo=_startupinfo(),
-        ).stdout.strip()
-        return bool(out)
-    except Exception:
+        pid = int(lock.read_text(encoding="utf-8").strip() or 0)
+    except (OSError, ValueError):
         return False
+    return _alive(pid)
 
 
 def _main_locked(url: str) -> int:
