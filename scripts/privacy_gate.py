@@ -127,8 +127,15 @@ def rule_qq_bare(text: str) -> list[tuple[int, int, str]]:
         if value in BENIGN_NUMBERS or VERSION_RE.match(value):
             continue
         at = _offset(text, line, col)
-        if at and text[at - 1] in ":/":  # 端口、时间 12:34
-            continue
+        # 冒号后面只放过「端口/时间」这一种可能：65535 以内。
+        # 以前一律放过，于是 "private:3102849732" 这种 conv_id 被当成 host:port
+        # 溜过去了（2026-11-10 就是这样漏掉了文档里的主人 QQ）。
+        if at and text[at - 1] in ":/":
+            try:
+                if int(value) <= 65535:
+                    continue
+            except ValueError:
+                pass
         if value.lstrip("0") == "":
             continue
         out.append((line, col, value))
@@ -196,8 +203,12 @@ RULES = [
 
 
 def git(*args: str) -> list[str]:
+    # core.quotepath=false：不让 git 把中文文件名转成 \344\270\273 这种转义，
+    # 否则 ROOT/rel 找不到文件、整份被跳过（2026-11-10 发现：24 个中文名文件
+    # 从来没被扫过，"查了 93 个"就是这么来的）。
     proc = subprocess.run(
-        ["git", "-C", str(ROOT), *args], capture_output=True, text=True, encoding="utf-8", errors="replace"
+        ["git", "-C", str(ROOT), "-c", "core.quotepath=false", *args],
+        capture_output=True, text=True, encoding="utf-8", errors="replace"
     )
     if proc.returncode != 0:
         raise SystemExit(f"git {' '.join(args)} 失败：{proc.stderr.strip()[:300]}")

@@ -53,7 +53,7 @@ def test_two_ids_share_one_history_key(plugin):
     assert k1 == k2 == "person:管理员A"
     # 群聊和陌生人私聊各管各的
     assert plugin.history_key(ctx.cfg, "group:123456") == "group:123456"
-    assert plugin.history_key(ctx.cfg, "private:999999") == "private:999999"
+    assert plugin.history_key(ctx.cfg, "private:999999") == "private:999999"  # privacy-ok: 假号
 
 
 def test_history_written_on_one_id_is_visible_on_the_other(plugin):
