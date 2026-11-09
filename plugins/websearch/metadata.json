@@ -2,7 +2,7 @@
   "id": "websearch",
   "name": "联网",
   "name_en": "WebSearch",
-  "version": "1.1.0",
+  "version": "1.1.1",
   "author": "ya-shua",
   "description": "遇到不懂的词、梗、事就自己上网查，查过的短词顺手记进词库",
   "builtin": true

@@ -27,8 +27,11 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 STATE = ROOT / "data" / "panel.hwnd"
+PIDFILE = ROOT / "data" / "panel.pid"
 OPENING = ROOT / "data" / "panel.opening"
-TITLE_RE = re.compile(r"海螺|运行总览|模型接入|发言策略|插件")
+# 面板用**自己的**浏览器配置目录：不和你平时开的浏览器抢同一个实例，
+# 也不会因为「已有浏览器任务」被合并进去（合并后就看不见新窗口了）
+PROFILE = ROOT / "data" / "panel-profile"
 BROWSERS = (
     "msedge", "chrome", "brave", "firefox", "vivaldi", "opera",
     "360se", "360chrome", "qqbrowser", "sogouexplorer", "arc",
@@ -86,30 +89,38 @@ def alive(hwnd: int) -> bool:
     return bool(hwnd) and bool(_user32.IsWindow(hwnd)) and bool(_user32.IsWindowVisible(hwnd))
 
 
-def find(pattern: re.Pattern[str] | None = None) -> int:
-    """找那个控制台窗口：标题像海螺，且属于浏览器。"""
-    pattern = pattern or TITLE_RE
-    found = 0
+def _windows_of_pid(pid: int) -> list[int]:
+    """这个进程的所有可见顶层窗口。"""
+    out: list[int] = []
 
     def cb(hwnd, _lp):
-        nonlocal found
-        if found:
-            return False
         if not _user32.IsWindowVisible(hwnd):
             return True
-        title = _title(hwnd)
-        if not title or not pattern.search(title):
-            return True
-        pid = wintypes.DWORD()
-        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
-        name = _proc_name(pid.value)
-        if not any(b in name for b in BROWSERS):
-            return True
-        found = hwnd
-        return False
+        holder = wintypes.DWORD()
+        _user32.GetWindowThreadProcessId(hwnd, ctypes.byref(holder))
+        if holder.value == pid and _title(hwnd):
+            out.append(hwnd)
+        return True
 
     _user32.EnumWindows(_WNDENUMPROC(cb), 0)
-    return found
+    return out
+
+
+def find_for_pid(pid: int) -> int:
+    """认出「我们自己起的那个浏览器窗口」—— 只认进程，不看标题。
+
+    标题认窗口会认错：GitHub 上的仓库页标题里就有「海螺」，
+    以前会把那个标签当面板提上来，于是「面板打不开、打开的是 GitHub」。
+    """
+    if not pid or not _is_browser_process(pid):
+        return 0
+    wins = _windows_of_pid(pid)
+    return wins[0] if wins else 0
+
+
+def _is_browser_process(pid: int) -> bool:
+    name = _proc_name(pid)
+    return bool(name) and any(b in name for b in BROWSERS)
 
 
 def _remember(hwnd: int) -> None:
@@ -118,6 +129,31 @@ def _remember(hwnd: int) -> None:
         STATE.write_text(str(int(hwnd)), encoding="ascii")
     except OSError:
         pass
+
+
+def _remember_pid(pid: int) -> None:
+    try:
+        PIDFILE.parent.mkdir(parents=True, exist_ok=True)
+        PIDFILE.write_text(str(int(pid)), encoding="ascii")
+    except OSError:
+        pass
+
+
+def _remembered_pid() -> int:
+    try:
+        return int(PIDFILE.read_text(encoding="ascii").strip() or 0)
+    except (OSError, ValueError):
+        return 0
+
+
+def _process_alive(pid: int) -> bool:
+    if not pid:
+        return False
+    handle = _kernel32.OpenProcess(_PROCESS_QUERY_LIMITED_INFORMATION, False, pid)
+    if not handle:
+        return False
+    _kernel32.CloseHandle(handle)
+    return True
 
 
 def _remembered() -> int:
@@ -216,17 +252,21 @@ def _release_launch() -> None:
 def open_panel(url: str, wait: float = 12.0, log=print) -> str:
     """打开（或提到最前）控制台页面。返回 raised / opened / waiting / failed。"""
     hwnd = _remembered()
-    if alive(hwnd):
-        if raise_window(hwnd):
-            log("面板窗口提到最前")
-            return "raised"
-
-    hwnd = find()
-    if hwnd:
-        _remember(hwnd)
-        raise_window(hwnd)
-        log("按标题找到面板窗口，提到最前")
+    if alive(hwnd) and raise_window(hwnd):
+        log("面板窗口提到最前")
         return "raised"
+
+    # 上次起的那个浏览器还在跑？按 pid 认它（标题不可靠）
+    pid = _remembered_pid()
+    if pid and _process_alive(pid):
+        hwnd = find_for_pid(pid)
+        if hwnd:
+            _remember(hwnd)
+            raise_window(hwnd)
+            log("按进程找到面板窗口，提到最前")
+            return "raised"
+        log("面板进程还活着，但窗口还没出来（可能正在关）")
+        return "waiting"
 
     start = time.time()
     end = start + wait
@@ -236,27 +276,39 @@ def open_panel(url: str, wait: float = 12.0, log=print) -> str:
         log("别的入口正在打开，等它")
         while time.time() < end:
             time.sleep(0.15)
-            hwnd = find()
-            if hwnd:
-                _remember(hwnd)
-                raise_window(hwnd)
-                return "raised"
+            other = _remembered_pid()
+            if other:
+                hwnd = find_for_pid(other)
+                if hwnd:
+                    _remember(hwnd)
+                    raise_window(hwnd)
+                    return "raised"
+            time.sleep(0)
         log("等不到那个窗口")
         return "waiting"
 
     try:
         exe = _browser_exe()
         if exe:
-            subprocess.Popen(  # noqa: S603
-                [exe, "--new-window", "--start-maximized", url],
+            # 独立 profile：不跟已有的浏览器任务合并，保证窗口真的新开一个
+            try:
+                PROFILE.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                pass
+            proc = subprocess.Popen(  # noqa: S603
+                [exe, f"--user-data-dir={PROFILE}", "--no-first-run",
+                 "--no-default-browser-check", "--new-window", "--start-maximized", url],
                 close_fds=True,
             )
+            _remember_pid(proc.pid)
         else:
             os.startfile(url)  # noqa: S606
+            _remember_pid(0)
 
         while time.time() < end:
             time.sleep(0.15)
-            hwnd = find()
+            target = _remembered_pid()
+            hwnd = find_for_pid(target) if target else 0
             if hwnd:
                 _remember(hwnd)
                 _user32.ShowWindow(hwnd, 3)
