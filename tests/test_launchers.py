@@ -1,6 +1,7 @@
 """launchers 的启停账本：PID 档案、三重查找、认脸再杀。不起真进程，全靠桩。"""
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -93,3 +94,58 @@ def test_stop_all_summarizes(clean_state, monkeypatch):
     result = launchers.stop_all([{"id": "ring"}, {"id": "video"}])
     assert result["stopped"] == ["ring"]
     assert result["skipped"] == ["video"]
+
+
+def _plugin_dir(root, name, meta):
+    d = root / name
+    d.mkdir()
+    (d / "metadata.json").write_text(
+        json.dumps(meta, ensure_ascii=False), encoding="utf-8"
+    )
+    return d
+
+
+def test_metadata_runtime_node_builds_command(clean_state, tmp_path, monkeypatch):
+    """metadata 只写 runtime + entry，命令由海螺拼 —— 挪目录不用改路径。"""
+    monkeypatch.setattr(launchers, "_node_bin", lambda cfg: r"C:\node\node.exe")
+    d = _plugin_dir(tmp_path, "eyes", {
+        "id": "eyes",
+        "name": "留影",
+        "launch": {"runtime": "node", "entry": "src/panel.mjs", "args": ["--port", "5188"], "port": 5188},
+    })
+    items = launchers.load(str(clean_state), [str(tmp_path)])
+    item = next(i for i in items if i["id"] == "eyes")
+    assert item["cmd"] == r"C:\node\node.exe"
+    assert item["cwd"] == str(d)
+    assert item["args"] == [str(Path("src/panel.mjs")), "--port", "5188"]
+
+
+def test_metadata_runtime_python_prefers_plugin_venv(clean_state, tmp_path):
+    d = _plugin_dir(tmp_path, "voice", {
+        "id": "voice",
+        "launch": {"runtime": "python", "entry": "panel/launch.py"},
+    })
+    bin_dir = d / ".venv" / "Scripts"
+    bin_dir.mkdir(parents=True)
+    (bin_dir / "pythonw.exe").write_text("", encoding="utf-8")
+    items = launchers.load(str(clean_state), [str(tmp_path)])
+    item = next(i for i in items if i["id"] == "voice")
+    assert item["cmd"].endswith(str(Path(".venv/Scripts/pythonw.exe")))
+    assert item["args"] == [str(Path("panel/launch.py"))]
+
+
+def test_hand_written_entry_wins_but_metadata_fills_gaps(clean_state, tmp_path):
+    """launchers.json 里手写的优先；它没写的字段由插件 metadata 补上。"""
+    _plugin_dir(tmp_path, "ring", {
+        "id": "ring",
+        "launch": {"runtime": "node", "entry": "src/web/server.js", "port": 5173},
+    })
+    launchers._path(clean_state).write_text(
+        json.dumps([{"id": "ring", "name": "环形的心", "port": 5200}], ensure_ascii=False),
+        encoding="utf-8",
+    )
+    items = launchers.load(str(clean_state), [str(tmp_path)])
+    item = next(i for i in items if i["id"] == "ring")
+    assert item["port"] == 5200  # 手写的没被覆盖
+    assert item["cmd"]  # 手写没写 cmd，从 metadata 补
+    assert item["cwd"].endswith("ring")

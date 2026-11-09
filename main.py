@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import argparse
 import asyncio
+import os
 import secrets
 import sys
 import time
@@ -59,12 +60,12 @@ async def run(cfg: Config, cfg_path: str = "config.json") -> None:
     loader.scan()
 
     # 表情包是海螺自带的本事（不是插件）：挂到总线上，面板「表情包」页直接用
-    stickers = Stickers(cfg, store, onebot, bus)
+    # 留影是外面那套程序，海螺只借它看图 —— 同样不是插件
+    look = Look(cfg, store, bus)
+    look.attach(bus)
+    stickers = Stickers(cfg, store, onebot, bus, tools=tools, look=look, services=services)
     stickers.attach(bus)
     services["stickers"] = stickers
-    # 留影是外面那套程序，海螺只借它看图 —— 同样不是插件
-    look = Look(cfg, bus)
-    look.attach(bus)
 
     state = {
         "onebot": onebot,
@@ -136,6 +137,45 @@ def _port_in_use(port: int) -> bool:
         return False
 
 
+def _alive(pid: int) -> bool:
+    if pid <= 0:
+        return False
+    import ctypes
+
+    handle = ctypes.windll.kernel32.OpenProcess(0x1000, False, pid)
+    if handle:
+        ctypes.windll.kernel32.CloseHandle(handle)
+        return True
+    return False
+
+
+def _take_host_lock(cfg_path: str) -> bool:
+    """单实例的硬闸：原子地占住 data/host.lock。
+
+    端口检查有个时间窗：两个进程几乎同时起来时，谁也还没绑定完成，
+    于是两个都通过、两个都连 QQ，互相踢线 —— 表现就是"消息进来了她不回"。
+    这里用 O_EXCL 先占位，抢不到的直接退出。
+    """
+    lock = Path(cfg_path).resolve().parent / "data" / "host.lock"
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    for _ in range(2):
+        try:
+            fd = os.open(str(lock), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+            os.write(fd, str(os.getpid()).encode())
+            os.close(fd)
+            return True
+        except FileExistsError:
+            try:
+                pid = int(lock.read_text(encoding="utf-8").strip() or "0")
+            except (OSError, ValueError):
+                pid = 0
+            if pid and pid != os.getpid() and _alive(pid):
+                return False
+            # 上一任已经没了（崩溃/被强杀）：清掉再来一次
+            lock.unlink(missing_ok=True)
+    return False
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="海螺", description="海螺插件宿主")
     parser.add_argument("--config", default="config.json", help="配置文件路径")
@@ -155,8 +195,10 @@ def main(argv: list[str] | None = None) -> int:
     if not cfg.owner_qq:
         log.get("main").warning("没有配置 owner_qq：管理命令和 owner 私聊放行都不可用")
 
-    # 单实例：面板端口已经有人听了，说明本体已经在跑。
-    # 两个本体同时连 OneBot 会互相踢线，表现就是"消息进来了她不回"。
+    # 单实例（硬闸 + 端口复核）：两个本体同时连 OneBot 会互相踢线。
+    if not _take_host_lock(args.config):
+        log.get("main").warning("已经有一个海螺本体在跑，这个进程直接退出（避免抢 QQ 连接）")
+        return 0
     if _port_in_use(int(cfg.panel.port)):
         log.get("main").warning(
             "面板端口 %s 已经在用了：本体已经在跑，这个进程直接退出（避免两个实例抢 QQ 连接）",

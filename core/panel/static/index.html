@@ -134,6 +134,18 @@ code{font-family:Consolas,"SFMono-Regular",monospace;font-size:.92em;color:var(-
 .stcfg .fu{font-size:12px;color:var(--muted)}
 .stcfg .fh{font-size:12px;color:var(--muted);margin:2px 0 10px}
 .stcfg .fbtns{display:flex;gap:8px;margin-top:12px}
+.stcfg summary{cursor:pointer;font-size:13px;color:var(--text-2);padding:2px 0}
+/* 设置页两栏：左边常用的（收不收、看图），右边提示词/容量；高级整行收在最下面 */
+#stStickerFields{display:grid;grid-template-columns:1fr 1fr;gap:12px 16px;align-items:stretch}
+#stStickerFields > .stcfg{display:flex;flex-direction:column}
+#stStickerFields > details{grid-column:1 / -1}
+/* 卡片里的折叠块：整宽、只加一条分割线，别再套一个小卡片（会缩进、对不齐） */
+.stFold{border-top:1px solid var(--border);margin-top:10px;padding-top:8px}
+.stFold summary{cursor:pointer;font-size:13px;font-weight:600;color:var(--text-2);padding:4px 0}
+.stFold summary:hover{color:var(--text)}
+#stStickerFields .stcfg .fl{flex:0 0 128px}
+#stStickerFields .stcfg select{width:auto;min-width:88px;max-width:150px}
+@media (max-width: 980px){#stStickerFields{grid-template-columns:1fr}}
 /* 称呼卡：卡片内部网格，保证每张卡的框都对齐 */
 .card{border:1px solid var(--border);border-radius:12px;padding:12px 14px;margin-bottom:12px;background:var(--surface-2)}
 .card-h{display:flex;align-items:center;gap:8px;margin-bottom:10px}
@@ -458,23 +470,54 @@ input[type=number]{font-variant-numeric:tabular-nums;max-width:110px}
 .seg.wrap button{padding:5px 10px;font-size:11.5px}
 .seg button{border:none;background:transparent;color:var(--muted);font-size:12px;padding:6px 12px;border-radius:8px;cursor:pointer}
 .seg button.on{background:#fff;color:inherit;box-shadow:0 1px 2px rgba(16,18,32,.12)}
-.skin .src{position:absolute;left:6px;bottom:6px;font-size:10px;color:#fff;background:rgba(20,22,34,.5);
-  border-radius:6px;padding:1px 6px;opacity:0;transition:opacity .15s}
-.skinbar{position:absolute;right:6px;bottom:6px;display:flex;gap:4px;opacity:0;transition:opacity .15s}
+.skin .src{position:absolute;left:6px;top:6px;font-size:10px;color:#fff;background:rgba(20,22,34,.5);
+  border-radius:6px;padding:2px 6px;line-height:1.4}
+.skinbar{position:absolute;left:6px;right:6px;bottom:6px;display:flex;align-items:center;gap:5px;justify-content:flex-end;opacity:0;transition:opacity .15s}
 .skin:hover .src,.skin:hover .skinbar{opacity:1}
-.skin .mini{border:none;background:rgba(20,22,34,.55);color:#fff;font-size:11px;border-radius:6px;padding:2px 7px;cursor:pointer}
-.skin .rk{position:absolute;left:6px;top:6px;max-width:60%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;
-  font-size:10px;color:#3b3f52;background:rgba(255,255,255,.85);border-radius:6px;padding:1px 6px}
+.skinbar .stag{font-size:10px;color:#fff;background:rgba(20,22,34,.55);border-radius:6px;padding:2px 6px;
+  line-height:1.4;margin-right:auto}
+.skin .mini{border:none;background:rgba(20,22,34,.55);color:#fff;font-size:11px;line-height:1.4;border-radius:6px;
+  padding:2px 8px;cursor:pointer;font-family:inherit}
 [data-theme="dark"] .seg{background:#101016}
 [data-theme="dark"] .seg button.on{background:#22222b}
 [data-theme="dark"] .skin .rk{color:#e6e6ee;background:rgba(20,22,34,.75)}
-.skins{display:grid;grid-template-columns:repeat(auto-fill,minmax(104px,1fr));gap:12px;margin-top:12px}
+.skins{display:grid;grid-template-columns:repeat(auto-fill,minmax(190px,1fr));gap:14px;margin-top:12px}
+#stickerCount{display:flex;flex-wrap:wrap;align-items:center;gap:4px 16px;font-size:13px;font-weight:600;
+  color:var(--text-2)}
+/* 设置页固定右下角的保存 / 恢复默认 */
+.stActions{position:fixed;right:28px;bottom:26px;z-index:45;display:flex;align-items:center;gap:12px;
+  padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:16px;
+  box-shadow:0 12px 32px rgba(16,18,32,.20)}
+.stActions[hidden]{display:none}
+.stActions button{height:40px;padding:0 24px;font-size:15px;font-weight:600;border-radius:10px;
+  line-height:1;display:inline-flex;align-items:center;justify-content:center;min-width:112px}
 .skin{position:relative;border:1px solid #d8dceb;border-radius:12px;background:#fff;overflow:hidden;
   aspect-ratio:1;display:grid;place-items:center;box-shadow:0 1px 2px rgba(16,18,32,.06);transition:border-color .15s,box-shadow .15s,transform .15s}
 .skin:hover{border-color:#aeb7d2;box-shadow:0 6px 16px rgba(16,18,32,.12);transform:translateY(-2px)}
-.skin img{width:100%;height:100%;object-fit:contain;background:#fff}
+.skin img{width:100%;height:100%;object-fit:contain;background:#fff;cursor:zoom-in}
+/* 点图看大图：表情原图通常很小，放大了才看得清该写什么描述 */
+#stZoom{position:fixed;inset:0;z-index:90;display:none;align-items:center;justify-content:center;
+  background:rgba(12,14,22,.72);backdrop-filter:blur(3px);cursor:zoom-out}
+#stZoom.on{display:flex}
+#stZoom img{max-width:86vw;max-height:82vh;border-radius:14px;background:#fff;box-shadow:0 18px 50px rgba(0,0,0,.4)}
+#stZoom .cap{position:absolute;bottom:6vh;left:50%;transform:translateX(-50%);color:#fff;font-size:16px;
+  background:rgba(12,14,22,.55);padding:10px 16px;border-radius:12px;
+  max-width:80vw;text-align:center;line-height:1.65;font-weight:500}
+/* 编辑表情：左边看图，右边写描述和标签 */
+.stEditBody{display:grid;grid-template-columns:260px 1fr;gap:18px;align-items:start}
+.stEditBody img{width:100%;max-height:280px;object-fit:contain;border:1px solid var(--border);border-radius:10px;background:#fff}
+.stEditBody .stLab{display:block;font-size:12.5px;font-weight:600;margin:10px 0 4px}
+.stEditBody .stLab:first-child{margin-top:0}
+.stEditBody .stLab span{font-weight:400;color:var(--muted);font-size:11.5px;margin-left:4px}
+.stEditBody textarea{width:100%;min-height:84px;resize:vertical}
+.stEditBody input[type=text]{width:100%}
+@media (max-width:760px){.stEditBody{grid-template-columns:1fr}.stEditBody img{max-height:200px}}
 .skin .tx{font-size:11px;color:var(--muted);padding:8px;word-break:break-all;text-align:center}
-.skin .use{position:absolute;left:6px;top:6px;font-size:10px;color:#fff;background:rgba(20,22,34,.62);
+.skin .nofile{display:flex;flex-direction:column;align-items:center;gap:3px;color:var(--muted);font-size:11.5px;
+  padding:10px;text-align:center}
+.skin .nofile .ni{font-size:22px;opacity:.35;line-height:1}
+.skin .nofile .ns{font-size:10px;opacity:.7;max-width:100%;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.skin .use{position:absolute;left:6px;top:6px;font-size:12px;font-weight:600;color:#fff;background:rgba(20,22,34,.62);
   border-radius:999px;padding:1px 7px;backdrop-filter:blur(2px)}
 .skin .del{position:absolute;right:6px;top:6px;width:22px;height:22px;border-radius:999px;border:none;
   background:rgba(20,22,34,.55);color:#fff;font-size:12px;line-height:1;cursor:pointer;opacity:0;transition:opacity .15s}
@@ -567,6 +610,16 @@ details.fold>.fbody{padding:16px 18px}
 #fabStrat{position:fixed;right:18px;bottom:18px;z-index:50}
 #fabStrat[hidden]{display:none}
 #fabStrat button{height:38px;padding:0 20px;font-size:13px;border-radius:10px;box-shadow:0 6px 20px rgba(16,18,32,.18)}
+#fabUpd{position:fixed;left:18px;bottom:18px;z-index:50}
+#fabUpd[hidden]{display:none}
+#fabUpd button{
+  border:1px solid var(--border-2);background:var(--surface);color:var(--text-2);
+  border-radius:999px;padding:0 16px;height:34px;font-size:12px;cursor:pointer;
+  display:inline-flex;align-items:center;justify-content:center;line-height:1;
+  text-align:center;white-space:nowrap;letter-spacing:.2px;
+  box-shadow:0 6px 20px rgba(16,18,32,.12);
+}
+#fabUpd button:disabled{opacity:.6;cursor:default}
 #fab button{
   border:1px solid var(--border-2);background:var(--surface);color:var(--text-2);
   border-radius:999px;padding:0 16px;height:34px;font-size:12px;cursor:pointer;
@@ -643,6 +696,9 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
             <div id="fab">
   <button id="fabReloadAll" title="把所有正在跑的插件重载一遍">重载全部插件</button>
   <button id="fabRefresh" title="刷新当前页">刷新</button>
+</div>
+<div id="fabUpd" hidden>
+  <button id="btnUpdTide" title="检查 Tide 有没有新版本，有就直接更新">检测 Tide 新版本</button>
 </div>
 <div class="app">
 
@@ -1249,17 +1305,29 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
               <span class="note" id="stickerCount">—</span>
               <button class="sm" id="stSync">同步 QQ 收藏</button>
               <button class="sm" id="refreshStickers">刷新</button>
-              <button class="sm" id="stCfg">设置</button>
+              <div class="seg" id="stTabs" style="margin-left:auto">
+                <button class="on" data-tab="lib">表情</button>
+                <button data-tab="cfg">设置</button>
+              </div>
             </div>
             <div class="sec-body">
-              <div class="seg" id="stFilter">
-                <button class="on" data-src="">全部</button>
-                <button data-src="qq_favorite">QQ 收藏</button>
-                <button data-src="collected">群里收的</button>
+              <div id="stLib">
+                <div class="seg" id="stFilter">
+                  <button class="on" data-src="">全部</button>
+                  <button data-src="qq_favorite">QQ 收藏 <b id="stCntFav">0</b></button>
+                  <button data-src="collected">收下的 <b id="stCntCol">0</b></button>
+                  <button data-src="candidate">缓存区 <b id="stCntCand">0</b></button>
+                  <button data-unread="1">缓冲区 <b id="stCntBuf">0</b></button>
+                </div>
+                <div class="hint" id="stZoneHint" style="display:none"></div>
+                <div class="hint" id="stVision" style="display:none"></div>
+                <div class="skins" id="skinGrid"></div>
               </div>
-              <div class="hint">QQ「我的表情」会定时同步；群里的表情自动收（每分钟 2 张、每小时 10 张，防刷屏）。同一张只存一份，角上的 ×N 是发过几次。鼠标移上去可以起名、试发、删掉。</div>
-              <div class="stcfg" id="stCfgBox" hidden></div>
-              <div class="skins" id="skinGrid"></div>
+              <div id="stCfgPage" hidden></div>
+            <div class="stActions" id="stActions" hidden>
+              <button id="stCfgReset">恢复默认</button>
+              <button class="primary" id="stCfgSave">保存</button>
+            </div>
             </div>
           </section>
         </div>
@@ -1271,6 +1339,31 @@ td.lean{color:var(--text-2);line-height:1.65;max-width:420px;white-space:normal}
   </div>
 </div>
 <div class="toast" id="toast"></div>
+<div id="stZoom"><img alt=""><div class="cap"></div></div>
+<div class="mask" id="stEditMask">
+  <div class="dlg" style="width:min(760px,94vw)" role="dialog" aria-modal="true" aria-labelledby="stEditTitle">
+    <div class="dlg-h"><h3 id="stEditTitle">编辑这张表情</h3></div>
+    <div class="dlg-b">
+      <div class="stEditBody">
+        <img id="stEditImg" alt="">
+        <div>
+          <label class="stLab" for="stEditDesc">名字 <span>改名字就改这里，用你自己的话说</span></label>
+          <textarea id="stEditDesc" rows="3" maxlength="200" placeholder="例：一只猫四脚朝天躺着，摆烂"></textarea>
+          <label class="stLab" for="stEditTags">标签 <span>顿号分开，发的时候按它找</span></label>
+          <input type="text" id="stEditTags" maxlength="60" autocomplete="off" placeholder="无语、摆烂、催">
+          <div class="dsub" id="stEditNote" style="margin-top:8px">
+            名字是你写的就不会被模型改写；「按名字重算标签」只是让模型照这句话补标签。
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="dlg-f">
+      <button class="sm" id="stEditCancel">取消</button>
+      <button class="sm" id="stEditRetag">按名字重算标签</button>
+      <button class="primary sm" id="stEditSave">保存</button>
+    </div>
+  </div>
+</div>
 <script>
 const $ = (id) => document.getElementById(id);
 const VIEWS = {
@@ -1433,6 +1526,9 @@ function applyPage(v) {
   document.title = meta[0] + " · 海螺";
   const fab = $("fab");
   if (fab) fab.hidden = v !== "plugins";
+  if (typeof syncStActions === "function") syncStActions();
+  const fabUpd = $("fabUpd");
+  if (fabUpd) fabUpd.hidden = v !== "plugins";
   const fabStrat = $("fabStrat");
   if (fabStrat) fabStrat.hidden = v !== "strategy";
 }
@@ -1443,6 +1539,45 @@ function switchView(v) {
   history.replaceState(null, "", "#" + v);
   applyPage(v);
   refresh();
+}
+
+// 插件页左下角：检测 Tide 有没有新版，有就直接更新。
+// 海螺只把请求转给 Tide 自己的 POST /api/update，不碰它的文件。
+async function updateTidePlugin() {
+  const btn = $("btnUpdTide");
+  if (!btn) return;
+  const ready = btn.textContent;
+  btn.disabled = true;
+  try {
+    btn.textContent = "检测中…";
+    const r = await api("/api/plugins/check-updates", {
+      method: "POST",
+      body: JSON.stringify({ force: true }),
+    });
+    const it = (r.items || {}).tide || {};
+    if (it.error) { toast("检查失败：" + it.error); return; }
+    if (!it.has_update) {
+      toast("Tide 已是最新" + (it.current ? " " + it.current : ""));
+      return;
+    }
+    const yes = await ask({
+      title: "Tide 有新版本",
+      emphasis: true,
+      sub: "当前 " + (it.current || "?") + " → " + (it.latest || "?") +
+        "\n\n会覆盖程序文件，data 和 config 不动；面板会自己重启一次。",
+      ok: "现在更新",
+      cancel: "稍后",
+    });
+    if (!yes) return;
+    btn.textContent = "更新中…";
+    await api("/api/plugins/tide/update", { method: "POST" });
+    toast("Tide 开始更新，面板会重启一下");
+  } catch (e) {
+    toast(e.message || String(e));
+  } finally {
+    btn.disabled = false;
+    btn.textContent = ready;
+  }
 }
 
 function showDead(why) {
@@ -1698,7 +1833,8 @@ async function loadPlugins() {
         (p.update && p.update.has_update
           ? ' <span class="updbadge" title="去它自己的页面更新">可更新 ' + esc(p.update.latest) + "</span>"
           : "") +
-        " · 海螺插件" + (p.author ? " · " + esc(p.author) : "") + port,
+        (p.kind === "app" ? " · 外部应用" : " · 海螺插件") +
+        (p.author ? " · " + esc(p.author) : "") + port,
       secret: launch ? launch.secret || launch.token || "" : "",
       secretLabel: launch && launch.secret ? "密码" : "口令",
       accent: accentOf(p.id),
@@ -2050,28 +2186,6 @@ async function openSheet(kind, id, name) {
       '<textarea id="cfgText" spellcheck="false"></textarea>' +
       '<div class="hint" id="cfgHint"></div>';
     $("cfgText").value = cfg.text || "{}";
-  } else if (kind === "sticker") {
-    let convs = [];
-    try {
-      const r = await api("/api/messages/convs");
-      convs = r.items || r.convs || [];
-    } catch (e) { convs = []; }
-    const opts = convs.map((c) => {
-      const id = c.conv_id || c.id;
-      const label = (c.title || c.name || id) + "（" + (c.kind === "group" ? "群" : "私聊") + "）";
-      return '<option value="' + esc(id) + '">' + esc(label) + "</option>";
-    }).join("");
-    body.innerHTML =
-      '<div class="field"><label for="stConv">发给谁</label>' +
-      (opts
-        ? '<select id="stConv">' + opts + "</select>"
-        : '<input id="stConv" placeholder="group:群号 或 private:QQ号">') +
-      '<div class="hint">只发这一张，不走她的说话逻辑。</div></div>' +
-      '<div class="hint" id="stHint"></div>';
-    $("cfgSaveId").value = id;
-    $("cfgSaveKind").value = "sticker";
-    $("sheetSave").style.display = "";
-    $("sheetSave").textContent = "发出去";
   } else {
     const res = await api("/api/launchers").catch(() => ({ items: [] }));
     const item = (res.items || []).find((x) => x.id === id) || { secrets: [] };
@@ -2122,17 +2236,6 @@ async function saveSheet() {
     } catch (e) {
       $("cfgHint").textContent = e.message;
     }
-    return;
-  }
-  if (kind === "sticker") {
-    const conv = ($("stConv").value || "").trim();
-    if (!conv) { $("stHint").textContent = "先选一个会话"; return; }
-    try {
-      await api("/api/stickers/" + id + "/send", { method: "POST", body: JSON.stringify({ conv_id: conv }) });
-      toast("发出去了");
-      closeSheet();
-      await loadStickers();
-    } catch (e) { $("stHint").textContent = "没发出去：" + e.message; }
     return;
   }
   const bag = {};
@@ -3160,12 +3263,21 @@ function openHist(hid) {
 
 
 let stickerSrc = "";
+let stickerUnread = false;
+const stickerCache = {};
 
 function stCfgRow(f) {
   const id = "stf_" + f.key;
   let input = "";
   if (f.type === "bool") {
     input = '<input type="checkbox" id="' + id + '" data-k="' + esc(f.key) + '"' + (f.value ? " checked" : "") + ">";
+  } else if (f.type === "select") {
+    const opts = (f.options || []).map((o) =>
+      '<option value="' + esc(o.value) + '"' + (String(o.value) === String(f.value) ? " selected" : "") + ">" +
+      esc(o.label) + "</option>").join("");
+    input = '<select id="' + id + '" data-k="' + esc(f.key) + '">' + opts + "</select>";
+  } else if (f.type === "pass") {
+    input = '<input type="password" id="' + id + '" data-k="' + esc(f.key) + '" value="' + esc(String(f.value == null ? "" : f.value)) + '" autocomplete="off" spellcheck="false">';
   } else if (f.type === "int" || f.type === "float") {
     input = '<input type="number" id="' + id + '" data-k="' + esc(f.key) + '" value="' + esc(String(f.value)) + '"' +
       (f.min !== undefined ? ' min="' + f.min + '"' : "") + (f.max !== undefined ? ' max="' + f.max + '"' : "") +
@@ -3178,79 +3290,210 @@ function stCfgRow(f) {
     (f.hint ? '<div class="fh">' + esc(f.hint) + "</div>" : "");
 }
 
-async function toggleStickerCfg() {
-  const box = $("stCfgBox");
+/* 「缓存区 / 缓冲区」的说明只在切到那一栏时出现一句话 */
+const ST_ZONE_HINT = {
+  candidate: "还没收的图暂存在这儿；满了先淘汰最久没出现的（同一张不会看两次）。点「收下」进正式库。",
+  unread: "视觉模型没调通，先放这儿等它恢复：隔 1 / 5 / 20 分钟各试一次，最多试几次在「设置」里改。",
+};
+
+function stZoneHint(src, unread) {
+  const el = $("stZoneHint");
+  if (!el) return;
+  const text = ST_ZONE_HINT[unread ? "unread" : src] || "";
+  el.textContent = text;
+  el.style.display = text ? "" : "none";
+}
+
+async function renderStickerSettings() {
+  const box = $("stCfgPage");
   if (!box) return;
-  if (!box.hidden) { box.hidden = true; return; }
+  box.innerHTML = '<div class="hint">读取中…</div>';
   let data;
   try {
     data = await api("/api/stickers/config");
   } catch (e) {
-    toast("读不到设置：" + e.message);
+    box.innerHTML = '<div class="hint">读不到设置：' + esc(e.message) + "</div>";
     return;
   }
   const fields = data.fields || [];
-  box.innerHTML = fields.map(stCfgRow).join("") +
-    '<div class="fbtns"><button class="primary sm" id="stCfgSave">保存</button>' +
-    '<button class="sm" id="stCfgCancel">取消</button></div>';
-  box.hidden = false;
-  $("stCfgCancel").onclick = () => { box.hidden = true; };
-  $("stCfgSave").onclick = async () => {
-    const values = {};
-    box.querySelectorAll("[data-k]").forEach((el) => {
-      values[el.dataset.k] = el.type === "checkbox" ? el.checked
-        : (el.type === "number" ? Number(el.value) : el.value);
+  let lookData = null;
+  try { lookData = await api("/api/look/config"); } catch (e) { lookData = null; }
+
+  // 分组画：基本 / 看图 / 容量 / 提示词，其余折进「高级」
+  const groups = {};
+  fields.forEach((f) => { (groups[f.group || "其它"] ||= []).push(f); });
+  const order = ["基本", "看图", "提示词", "容量", "其它"];
+  let form = order.filter((g) => groups[g]).map((g) =>
+    '<div class="stcfg"><div class="fh"><b>' + esc(g) + "</b></div>" +
+    groups[g].map(stCfgRow).join("") + "</div>").join("");
+  if (groups["高级"]) {
+    form += '<details class="stFold" style="grid-column:1 / -1"><summary>高级（一般不用动）</summary>' +
+      '<div style="margin-top:6px">' + groups["高级"].map(stCfgRow).join("") + "</div></details>";
+  }
+
+  const lookFields = (lookData && lookData.fields) || [];
+  const lookBase = lookFields.filter((f) => f.group === "额度");
+  const lookHook = lookFields.filter((f) => f.group !== "额度");
+  const lookBox = lookData
+    ? '<div class="stcfg" style="margin-top:14px"><div class="fh"><b>聊天看图</b>：海螺自己按天计数，和表情包分开；今天已看 ' +
+      (lookData.used_today || 0) + " 次。</div>" +
+      '<div id="stLookFields">' + lookBase.map(stCfgRow).join("") +
+      (lookHook.length
+        ? '<details class="stFold"><summary>模型接入（留影 / 直连 / 自定义）</summary>' +
+          '<div style="margin-top:6px">' + lookHook.map(stCfgRow).join("") + "</div></details>"
+        : "") + "</div></div>"
+    : "";
+  box.innerHTML = '<div id="stStickerFields">' + form + "</div>" + lookBox;
+  stCfgFields = fields;
+  stLookCfgFields = lookFields;
+  syncStActions();
+}
+
+// 设置页固定右下角：保存 / 恢复默认，一次存两套（表情包 + 聊天看图）
+let stCfgFields = [];
+let stLookCfgFields = [];
+
+function cfgValues(scope) {
+  const values = {};
+  document.querySelectorAll("#" + scope + " [data-k]").forEach((el) => {
+    values[el.dataset.k] = el.type === "checkbox" ? el.checked
+      : (el.type === "number" ? Number(el.value) : el.value);
+  });
+  return values;
+}
+
+function syncStActions() {
+  const bar = $("stActions");
+  if (!bar) return;
+  bar.hidden = !$("stCfgPage") || $("stCfgPage").hidden;
+}
+
+async function saveStickerCfg() {
+  const a = cfgValues("stStickerFields");
+  const b = cfgValues("stLookFields");
+  const btn = $("stCfgSave");
+  if (btn) btn.disabled = true;
+  try {
+    const r = await api("/api/stickers/config", { method: "PUT", body: JSON.stringify({ values: a }) });
+    if (Object.keys(b).length) await api("/api/look/config", { method: "PUT", body: JSON.stringify({ values: b }) });
+    toast(r.warning ? "存了，但没写进 config.json" : "存好了");
+    await loadStickers();
+  } catch (e) {
+    toast("保存失败：" + e.message);
+  } finally {
+    if (btn) btn.disabled = false;
+  }
+}
+
+async function resetStickerCfg() {
+  if (!(await askConfirm("恢复默认设置？", "表情包和聊天看图的每一项都回到内置默认值，然后自动保存。", { ok: "恢复" }))) return;
+  const fill = (scope, fields) => {
+    fields.forEach((f) => {
+      const el = document.querySelector("#" + scope + ' [data-k="' + f.key + '"]');
+      if (!el) return;
+      if (el.type === "checkbox") el.checked = !!f.default;
+      else el.value = f.default == null ? "" : String(f.default);
     });
-    const btn = $("stCfgSave");
-    btn.disabled = true;
-    try {
-      const r = await api("/api/stickers/config", { method: "PUT", body: JSON.stringify({ values }) });
-      toast(r.warning ? "存了，但没写进 config.json" : "存好了");
-      box.hidden = true;
-      await loadStickers();
-    } catch (e) {
-      toast("保存失败：" + e.message);
-      btn.disabled = false;
-    }
   };
+  fill("stStickerFields", stCfgFields);
+  fill("stLookFields", stLookCfgFields);
+  await saveStickerCfg();
+}
+
+const _stCfgSave = $("stCfgSave");
+if (_stCfgSave) _stCfgSave.onclick = saveStickerCfg;
+const _stCfgReset = $("stCfgReset");
+if (_stCfgReset) _stCfgReset.onclick = resetStickerCfg;
+
+function showStickerTab(tab) {
+  const lib = $("stLib");
+  const cfg = $("stCfgPage");
+  if (!lib || !cfg) return;
+  lib.hidden = tab !== "lib";
+  cfg.hidden = tab !== "cfg";
+  const tabs = $("stTabs");
+  if (tabs) tabs.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b.dataset.tab === tab));
+  if (tab === "cfg") renderStickerSettings();
+  syncStActions();
+}
+
+const _stTabs = $("stTabs");
+if (_stTabs) {
+  _stTabs.querySelectorAll("button").forEach((b) => { b.onclick = () => showStickerTab(b.dataset.tab); });
 }
 
 async function loadStickers() {
   const grid = $("skinGrid");
   const note = $("stickerCount");
   if (!grid) return;
-  const cfgBtn = $("stCfg");
-  if (cfgBtn) cfgBtn.onclick = toggleStickerCfg;
+  stZoneHint(stickerSrc, stickerUnread);
   grid.innerHTML = '<div class="hint">读取中…</div>';
   let data;
   try {
     const q = stickerSrc ? "&source=" + encodeURIComponent(stickerSrc) : "";
-    data = await api("/api/stickers?limit=300" + q);
+    data = await api("/api/stickers?limit=300" + q + (stickerUnread ? "&unread=1" : ""));
   } catch (e) {
     grid.innerHTML = '<div class="hint">读不到：' + esc(e.message) + "</div>";
     return;
   }
   const items = data.items || [];
+  items.forEach((it) => { stickerCache[it.id] = it; });
   const total = data.count || 0;
-  if (note) note.textContent = "共 " + total + " 张 · 收藏 " + (data.fav_count || 0) + " · 群里 " + (data.collected_count || 0);
+  const v = data.vision || {};
+  const capTxt = v.daily_max > 0 ? v.used_today + "/" + v.daily_max : v.used_today + "/不限";
+  const setN = (id, n) => { const el = $(id); if (el) el.textContent = String(n || 0); };
+  setN("stCntFav", data.fav_count); setN("stCntCol", data.collected_count);
+  setN("stCntCand", data.candidate_count); setN("stCntBuf", data.buffer_count);
+  if (note) {
+    // 左侧那几个数字筛选栏已经写了，这里只留额度 + 角标图例
+    const bits = ["视觉模型今天 " + capTxt];
+    if (v.look_max > 0) bits.push("聊天看图 " + (v.look_used || 0) + "/" + v.look_max);
+    bits.push("×N = 发过几次");
+    note.innerHTML = bits.map((s) => "<span>" + esc(s) + "</span>").join("");
+  }
+  const vw = $("stVision");
+  if (vw) {
+    let msg = "";
+    if (v.enabled === false) msg = "视觉模型关着：表情只存图，不认识（收下的会显示「待补」）。";
+    else if (v.daily_max > 0 && v.used_today >= v.daily_max) {
+      msg = "视觉模型今天的次数用完了（" + capTxt + "）：新图先进缓冲区，明天再认；急用可以调大「每天最多看几张」。";
+    } else if (v.look_max > 0 && (v.look_used || 0) >= v.look_max) {
+      msg = "聊天看图今天的次数用完了（" + (v.look_used || 0) + "/" + v.look_max + "）：这一天聊天里的图不看了，明天重来。";
+    } else if (v.buffer > 0) {
+      msg = "缓冲区还有 " + v.buffer + " 张在等重试（1 / 5 / 20 分钟退避，最多 " + (v.retry_max || 3) + " 次）。";
+    }
+    vw.textContent = msg;
+    vw.style.display = msg ? "" : "none";
+  }
   if (!items.length) {
-    grid.innerHTML = '<div class="empty"><span class="ei">☺</span><span>还没有表情</span><span>点「同步 QQ 收藏」，或者等群里有人发表情</span></div>';
+    const tip = stickerUnread
+      ? "缓冲区是空的：所有表情都被看明白了"
+      : "还没有表情：点「同步 QQ 收藏」，或者等群里有人发表情";
+    grid.innerHTML = '<div class="empty"><span class="ei">☺</span><span>这里现在是空的</span><span>' + esc(tip) + "</span></div>";
     return;
   }
   grid.innerHTML = items.map((it) => {
     const src = it.file ? "/api/stickers/" + it.id + "/file" : (it.url || "");
     const body = src
       ? '<img src="' + esc(src) + '" alt="" loading="lazy">'
-      : '<span class="tx">' + esc(it.remark || it.summary || "（拿不到图）") + "</span>";
+      : '<div class="nofile"><span class="ni">🖼</span><span>图没抓到</span>' +
+        (it.summary || it.meaning ? '<span class="ns">' + esc(it.summary || it.meaning) + "</span>" : "") + "</div>";
     const fav = it.source === "qq_favorite";
+    const cand = it.source === "candidate";
+    const badge = it.needs_meaning
+      ? '<span class="src" style="background:#f6c34a;color:#3a2b00" title="收下了但还没看懂">待补</span>'
+      : (it.buffered ? '<span class="src" title="等模型恢复后重试">缓冲</span>' : "");
+    // 卡片上不写名字（名字只在大图/编辑里看），只留「缓存 / 收藏」这种状态标
+    const stag = cand ? "缓存" : (fav ? "收藏" : "");
     return '<div class="skin" data-sid="' + it.id + '">' +
-      (it.uses > 1 ? '<span class="use">×' + it.uses + "</span>" : "") +
+      (it.uses > 1 ? '<span class="use" title="发过 ' + it.uses + ' 次">×' + it.uses + "</span>" : "") +
+      badge +
       '<button class="del" title="删掉">×</button>' +
-      '<span class="src ' + (fav ? "fav" : "") + '">' + (fav ? "收藏" : "群") + "</span>" +
       body +
-      '<div class="skinbar"><button class="mini" data-rm="1">起名</button>' +
-      '<button class="mini" data-sd="1">试发</button></div>' +
-      (it.remark ? '<span class="rk">' + esc(it.remark) + "</span>" : "") +
+      '<div class="skinbar">' +
+      (stag ? '<span class="stag">' + stag + "</span>" : "") +
+      (cand ? '<button class="mini" data-keep="1">收下</button>' : "") +
+      '<button class="mini" data-ed="1">编辑</button></div>' +
       "</div>";
   }).join("");
 
@@ -3266,28 +3509,44 @@ async function loadStickers() {
         await loadStickers();
       } catch (e) { toast("删除失败：" + e.message); }
     };
-    const rm = card.querySelector("[data-rm]");
-    if (rm) rm.onclick = async (ev) => {
+    const keep = card.querySelector("[data-keep]");
+    if (keep) keep.onclick = async (ev) => {
       ev.stopPropagation();
-      const now = (card.querySelector(".rk") || {}).textContent || "";
-      const name = await askText("给它起个名字", now, {
-        sub: "发的时候能按这个名字找它。",
-        placeholder: now,
-      });
-      if (name === null) return;
+      const it = stickerCache[sid] || {};
+      const what = it.meaning || it.summary || "这张";
+      if (!(await askConfirm("收下这张？", what + "\n会写进记忆库，以后聊天里能自己发。", { ok: "收下" }))) return;
+      keep.disabled = true;
       try {
-        await api("/api/stickers/" + sid + "/remark", { method: "POST", body: JSON.stringify({ remark: name }) });
-        toast("改好了");
+        await api("/api/stickers/" + sid + "/keep", { method: "POST", body: "{}" });
+        toast("收下了");
         await loadStickers();
-      } catch (e) { toast("改失败：" + e.message); }
+      } catch (e) { toast("收下失败：" + e.message); keep.disabled = false; }
     };
-    const sd = card.querySelector("[data-sd]");
-    if (sd) sd.onclick = (ev) => { ev.stopPropagation(); openSheet("sticker", sid, "表情"); };
+    const ed = card.querySelector("[data-ed]");
+    if (ed) ed.onclick = (ev) => { ev.stopPropagation(); openStickerEditor(sid); };
+    const img = card.querySelector("img");
+    if (img) img.onclick = (ev) => {
+      ev.stopPropagation();
+      const z = $("stZoom");
+      if (!z) return;
+      z.querySelector("img").src = img.src;
+      const it = stickerCache[sid] || {};
+      z.querySelector(".cap").textContent = [it.meaning, it.tags ? "（" + it.tags + "）" : ""].join("");
+      z.classList.add("on");
+    };
   });
 }
 
 const _refresh = $("refreshStickers");
 if (_refresh) _refresh.onclick = () => loadStickers();
+
+const _stZoom = $("stZoom");
+if (_stZoom) {
+  _stZoom.onclick = () => _stZoom.classList.remove("on");
+  document.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") _stZoom.classList.remove("on");
+  });
+}
 
 const _stSync = $("stSync");
 if (_stSync) _stSync.onclick = async () => {
@@ -3310,10 +3569,63 @@ if (_stFilter) {
   _stFilter.querySelectorAll("button").forEach((btn) => {
     btn.onclick = () => {
       stickerSrc = btn.dataset.src || "";
+      stickerUnread = btn.dataset.unread === "1";
       _stFilter.querySelectorAll("button").forEach((b) => b.classList.toggle("on", b === btn));
       loadStickers();
     };
   });
+}
+
+/* 编辑这张表情：描述 + 标签，一次改完（描述是你写的，重算标签只动标签） */
+function openStickerEditor(sid) {
+  const mask = $("stEditMask");
+  if (!mask) return;
+  const it = stickerCache[sid] || {};
+  $("stEditImg").src = "/api/stickers/" + sid + "/file";
+  $("stEditDesc").value = it.meaning || "";
+  $("stEditTags").value = it.tags || "";
+  $("stEditNote").textContent = "名字是你写的就不会被模型改写；「按名字重算标签」只是让模型照这句话补标签。";
+  mask.classList.add("on");
+  setTimeout(() => $("stEditDesc").focus(), 30);
+
+  const close = () => mask.classList.remove("on");
+  const busy = (on) => {
+    ["stEditSave", "stEditRetag"].forEach((id) => { const b = $(id); if (b) b.disabled = on; });
+  };
+  const post = async (retag) => {
+    const meaning = $("stEditDesc").value.trim();
+    const tags = $("stEditTags").value.trim();
+    busy(true);
+    try {
+      if (retag) {
+        const r = await api("/api/stickers/" + sid + "/meaning", {
+          method: "POST", body: JSON.stringify({ meaning, retag: true }),
+        });
+        if (r.tags) $("stEditTags").value = r.tags;
+        toast(r.warning || (r.tags ? "标签算好了：" + r.tags : "标签没算出来，名字已存"));
+      } else {
+        await api("/api/stickers/" + sid + "/meaning", {
+          method: "POST", body: JSON.stringify({ meaning, retag: false }),
+        });
+        await api("/api/stickers/" + sid + "/tags", {
+          method: "POST", body: JSON.stringify({ tags }),
+        });
+        toast("存好了");
+      }
+      // 名字只通过这里改：同一个字段写回 remark（她按名字找、记忆里的「我的说法」都跟着变）
+      await api("/api/stickers/" + sid + "/remark", {
+        method: "POST", body: JSON.stringify({ remark: meaning.slice(0, 40) }),
+      });
+      await loadStickers();
+    } catch (e) {
+      toast("保存失败：" + e.message);
+    } finally { busy(false); }
+  };
+
+  $("stEditSave").onclick = async () => { await post(false); close(); };
+  $("stEditRetag").onclick = async () => { await post(true); };
+  $("stEditCancel").onclick = close;
+  mask.onclick = (e) => { if (e.target === mask) close(); };
 }
 
 /* ---------- 主刷新 ---------- */
@@ -3367,6 +3679,7 @@ $("themeToggle").onclick = () => {
   try { localStorage.setItem("qb-theme", next); } catch (e) {}
 };
 $("refreshAll").onclick = () => { refreshCurrent(); toast("已刷新"); };
+if ($("btnUpdTide")) $("btnUpdTide").onclick = updateTidePlugin;
 
 if ($("notesClose")) $("notesClose").onclick = () => $("notesMask").classList.remove("on");
 if ($("notesMask")) $("notesMask").onclick = (e) => { if (e.target === $("notesMask")) $("notesMask").classList.remove("on"); };

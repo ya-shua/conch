@@ -117,9 +117,35 @@ def already_running() -> bool:
     return False
 
 
-def take_lock() -> None:
+def take_lock() -> bool:
+    """原子占位：两个托盘几乎同时起来时，只有一个能拿到。
+
+    以前是 read_text → write_text，中间有空窗，双击两下就能起两个托盘，
+    每个托盘各自拉一套服务，右下角变成两个图标、面板窗口也跟着弹两次。
+    """
     LOCK.parent.mkdir(parents=True, exist_ok=True)
-    LOCK.write_text(str(os.getpid()), encoding="utf-8")
+    try:
+        fd = os.open(str(LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except FileExistsError:
+        pass
+    try:
+        raw = LOCK.read_text(encoding="utf-8").strip()
+        pid = int(raw) if raw.isdigit() else 0
+    except (OSError, ValueError):
+        pid = 0
+    if pid and pid != os.getpid() and _alive(pid):
+        return False  # 真有一个活着的托盘
+    try:
+        LOCK.unlink(missing_ok=True)
+        fd = os.open(str(LOCK), os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+        os.write(fd, str(os.getpid()).encode())
+        os.close(fd)
+        return True
+    except (FileExistsError, OSError):
+        return False
 
 
 # ───────────────────────── 图标 ─────────────────────────
@@ -257,15 +283,14 @@ def main() -> int:
         print("托盘只支持 Windows")
         return 1
 
-    if already_running():
-        # 已经有一个托盘：只把面板打开就退出，别再起一套服务。
+    if not take_lock():
+        # 抢不到锁 = 已经有一个托盘在跑：只把面板打开就退出，别再起一套服务。
         # 这里必须**同步**做：开窗口可能要等浏览器起来，放后台线程的话
         # 主线程 return 了，守护线程会被直接掐掉 —— 窗口开了一半没人管。
         log("托盘已经在跑，只打开面板")
         open_once()
         return 0
 
-    take_lock()
     try:
         import pystray
         from pystray import Menu, MenuItem
@@ -303,7 +328,8 @@ def main() -> int:
                     stop_services()
                     time.sleep(1.0)
                     start_services()
-                    open_panel()
+                    # 重启就是重启：不替用户开面板（以前这里顺手 open_panel，
+                    # 结果每次点「重启海螺」都弹一张面板窗口出来）
                 finally:
                     state["busy"] = False
                     refresh()

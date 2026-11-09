@@ -17,6 +17,9 @@ from . import log
 
 log_ = log.get("loader")
 
+# 海螺本体的目录（core/loader.py 往上两级）。插件目录里如果出现它，要跳过。
+_HOST_DIR = Path(__file__).resolve().parents[1]
+
 STATUS_ENABLED = "enabled"
 STATUS_DISABLED = "disabled"
 STATUS_ERROR = "error"
@@ -31,6 +34,7 @@ class PluginMeta:
     description: str = ""
     builtin: bool = False
     source: object = ""  # "owner/repo" 或 {"repo": .., "check": "release"|"tag"}
+    kind: str = "plugin"  # plugin = 有 main.py；app = 独立应用（只有 metadata，靠启动器起）
     path: Path = Path(".")
     config: dict[str, Any] = field(default_factory=dict)
     raw: dict[str, Any] = field(default_factory=dict)
@@ -44,6 +48,7 @@ class PluginMeta:
             "description": self.description,
             "builtin": self.builtin,
             "source": self.source,
+            "kind": self.kind,
             "path": str(self.path),
         }
 
@@ -56,6 +61,9 @@ def read_meta(folder: Path) -> PluginMeta:
     if not isinstance(data, dict):
         raise ValueError(f"{meta_path} 顶层必须是对象")
     pid = str(data.get("id") or folder.name)
+    kind = str(data.get("kind") or "").strip() or (
+        "plugin" if (folder / "main.py").exists() else "app"
+    )
     return PluginMeta(
         id=pid,
         name=str(data.get("name") or pid),
@@ -64,6 +72,7 @@ def read_meta(folder: Path) -> PluginMeta:
         description=str(data.get("description") or ""),
         builtin=bool(data.get("builtin", False)),
         source=data.get("source") or "",
+        kind=kind,
         path=folder,
         raw=data,
     )
@@ -105,10 +114,26 @@ class Loader:
         if not folders:
             return []
         for folder in folders:
+            # 宿主自己的目录也可能躺在插件目录里（插件都挪到「桌面\插件」之后就是）。
+            # 只认「就是海螺本体的那个文件夹」，别用 core/version.py 这种特征 ——
+            # 别的插件也可能有 core/version.py（微光域就是），会被误伤。
+            try:
+                is_host = folder.resolve() == _HOST_DIR or (
+                    folder / "core" / "panel" / "server.py"
+                ).exists()
+                if is_host:
+                    log_.debug("跳过 %s：这是宿主自己的目录", folder.name)
+                    continue
+            except OSError:
+                pass
             try:
                 meta = read_meta(folder)
             except Exception as exc:
-                log_.warning("跳过 %s：%s", folder.name, exc)
+                # 有 main.py 却没写元数据才是配错了；纯数据目录（备份、素材）静静跳过
+                if (folder / "main.py").exists():
+                    log_.warning("跳过 %s：%s", folder.name, exc)
+                else:
+                    log_.debug("跳过 %s：%s", folder.name, exc)
                 continue
             cfg_path = folder / "config.json"
             if cfg_path.exists():
@@ -125,6 +150,10 @@ class Loader:
         meta = self.metas.get(pid)
         if meta is None:
             raise KeyError(f"没有这个插件：{pid}")
+
+        if meta.kind == "app":
+            # 独立应用不是宿主内插件，起停在启动器那边，这里只登记
+            raise RuntimeError(f"{meta.name} 是外部应用，请用「启动」按钮（launchers）起它")
 
         entry = meta.path / "main.py"
         if not entry.exists():

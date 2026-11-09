@@ -353,6 +353,43 @@ async def api_plugins_check_updates(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "items": items, "checked": len(items)})
 
 
+# 谁能"一键更新"：目前只有 Tide —— 它自己带 POST /api/update，下载完会退出重启
+UPDATE_CAPABLE = {"tide"}
+
+
+async def api_plugin_apply_update(request: web.Request) -> web.Response:
+    """替插件调它自己的更新接口。只转发，不碰插件文件。
+
+    插件自己下载、自己重启；连接在半路断掉是正常的（它会把进程退掉）。
+    """
+    pid = str(request.match_info["pid"])
+    if pid not in UPDATE_CAPABLE:
+        return web.json_response(
+            {"error": "这个插件没有一键更新，去它自己的页面更新"}, status=400
+        )
+    loader = request.app["state"]["loader"]
+    meta = (getattr(loader, "metas", None) or {}).get(pid)
+    page = ""
+    if meta is not None:
+        page = str(_plugin_meta(str(getattr(meta, "path", ""))).get("page") or "")
+    if not page:
+        return web.json_response({"error": "它没报页面地址，先把它启动起来"}, status=400)
+    url = page.rstrip("/") + "/api/update"
+    timeout = aiohttp.ClientTimeout(total=20)
+    try:
+        async with aiohttp.ClientSession(timeout=timeout) as session:
+            async with session.post(url, json={}) as resp:
+                try:
+                    data = await resp.json(content_type=None)
+                except Exception:
+                    data = {}
+                return web.json_response({"ok": True, "result": data})
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        return web.json_response(
+            {"ok": True, "result": {"applying": True}, "note": "它已经开始更新并重启"}
+        )
+
+
 async def api_plugin_config(request: web.Request) -> web.Response:
     """插件自己的 config.json：支持表单（schema）和原样 JSON 两种改法。"""
     pid = request.match_info["pid"]
@@ -1344,22 +1381,37 @@ async def api_messages_clear(request: web.Request) -> web.Response:
 
 
 async def api_stickers(request: web.Request) -> web.Response:
-    """收藏到的表情包列表，可按来源过滤。"""
+    """收藏到的表情包列表，可按来源过滤（candidate = 她还没收的缓存区）。"""
     store = request.app["state"]["store"]
     try:
         limit = max(1, min(500, int(request.query.get("limit", "200"))))
     except ValueError:
         limit = 200
     source = str(request.query.get("source") or "")
+    unread = str(request.query.get("unread") or "") in ("1", "true", "yes")
     fav = store.sticker_count(source="qq_favorite")
     total = store.sticker_count()
+    pending = store.sticker_count(source="candidate")
+    items = store.sticker_list(limit=limit, source=source)
+    failed = store.sticker_vision_failed_hashes()
+    if unread:
+        items = [it for it in items if str(it.get("hash")) in failed and not it.get("meaning")]
+    for it in items:
+        # 面板要显示「待补」：收下了但还没看懂
+        it["needs_meaning"] = bool(it.get("source") != "candidate" and not it.get("meaning"))
+        it["buffered"] = str(it.get("hash")) in failed
+    stickers = request.app["state"].get("stickers")
+    vision = stickers.vision_status() if stickers is not None else {}
     return web.json_response(
         {
             "ok": True,
             "count": total,
             "fav_count": fav,
-            "collected_count": total - fav,
-            "items": store.sticker_list(limit=limit, source=source),
+            "candidate_count": pending,
+            "collected_count": total - fav - pending,
+            "buffer_count": len(failed),
+            "vision": vision,
+            "items": items,
         }
     )
 
@@ -1410,49 +1462,120 @@ async def api_stickers_config(request: web.Request) -> web.Response:
     return web.json_response({"ok": True, "values": saved})
 
 
+async def api_look_config(request: web.Request) -> web.Response:
+    """聊天看图的设置（也放在表情包页，跟视觉模型是同一路）：GET / PUT。"""
+    app = request.app
+    look = app["state"].get("look")
+    if look is None:
+        return web.json_response({"error": "看图没就绪"}, status=500)
+    if request.method == "GET":
+        return web.json_response({"ok": True, "fields": look.schema(),
+                                  "values": look.settings(), "used_today": look.usage_today()})
+
+    body: dict[str, Any] = await request.json()
+    values = body.get("values") if isinstance(body.get("values"), dict) else body
+    if not isinstance(values, dict):
+        return web.json_response({"error": "要 {values: {...}}"}, status=400)
+    saved = look.apply(values)
+    cfg = app["cfg"]
+    raw = getattr(cfg, "raw", None)
+    if isinstance(raw, dict):
+        raw["look"] = saved
+        try:
+            Path(app["cfg_path"]).write_text(
+                json.dumps(raw, ensure_ascii=False, indent=2), encoding="utf-8"
+            )
+        except Exception as exc:
+            return web.json_response({"ok": True, "values": saved,
+                                      "warning": f"没写进 config.json：{exc}"})
+    return web.json_response({"ok": True, "values": saved})
+
+
 async def api_sticker_remark(request: web.Request) -> web.Response:
     """给一张表情起个名（备注），发的时候可以按名字找。"""
     store = request.app["state"]["store"]
     sid = request.match_info["sid"]
     body: dict[str, Any] = await request.json()
     remark = str(body.get("remark") or "").strip()[:40]
+    before = store.sticker_get(int(sid))
     if not store.sticker_set_remark(int(sid), remark):
         return web.json_response({"error": "没这张"}, status=404)
+    stickers = request.app["state"].get("stickers")
+    row = store.sticker_get(int(sid))
+    if stickers is not None and row is not None and remark:
+        stickers.remember_renamed(row, str((before or {}).get("remark") or ""))
     return web.json_response({"ok": True, "remark": remark})
 
 
-async def api_sticker_send(request: web.Request) -> web.Response:
-    """把一张表情发到指定会话（面板里手动试发）。"""
-    store = request.app["state"]["store"]
-    loader = request.app["state"]["loader"]
+async def api_sticker_meaning(request: web.Request) -> web.Response:
+    """主人亲手写/改描述；写了就按他的说法重新算标签（他不用懂标签怎么打）。"""
+    app = request.app
+    store = app["state"]["store"]
     sid = request.match_info["sid"]
+    body: dict[str, Any] = await request.json()
+    meaning = str(body.get("meaning") or "").strip()[:200]
+    retag = body.get("retag", True) is not False
     row = store.sticker_get(int(sid))
     if row is None:
         return web.json_response({"error": "没这张"}, status=404)
+    store.sticker_set_meaning(int(sid), meaning, str(row.get("tags") or ""))
+    tags = ""
+    stickers = app["state"].get("stickers")
+    if stickers is not None and meaning and retag:
+        try:
+            tags = await stickers.retag(int(sid))
+        except Exception as exc:
+            return web.json_response({"ok": True, "meaning": meaning, "warning": f"标签没算成：{exc}"})
+    return web.json_response({"ok": True, "meaning": meaning, "tags": tags})
+
+
+async def api_sticker_tags(request: web.Request) -> web.Response:
+    """手填/改标签（没看懂的那张、或者她觉得标签不对）。"""
+    store = request.app["state"]["store"]
+    sid = request.match_info["sid"]
     body: dict[str, Any] = await request.json()
-    conv = str(body.get("conv_id") or "").strip()
-    if not conv:
-        return web.json_response({"error": "要指定发给谁（conv_id）"}, status=400)
-    stickers = request.app["state"].get("stickers")
+    tags = "、".join(
+        t.strip() for t in str(body.get("tags") or "").replace("，", "、").split("、") if t.strip()
+    )[:200]
+    row = store.sticker_get(int(sid))
+    if row is None:
+        return web.json_response({"error": "没这张"}, status=404)
+    store.sticker_set_meaning(int(sid), str(row.get("meaning") or ""), tags)
+    return web.json_response({"ok": True, "tags": tags})
+
+
+async def api_sticker_keep(request: web.Request) -> web.Response:
+    """候选 → 收下（面板上点「收下」）。"""
+    state = request.app["state"]
+    stickers = state.get("stickers")
     if stickers is None:
-        return web.json_response({"error": "表情包插件没就绪"}, status=400)
-    ok = await stickers.send(conv, row)
-    if not ok:
-        return web.json_response({"error": "没发出去，看看日志"}, status=500)
-    return web.json_response({"ok": True, "conv_id": conv})
+        return web.json_response({"error": "表情包没就绪"}, status=500)
+    sid = request.match_info["sid"]
+    body: dict[str, Any] = {}
+    if request.can_read_body:
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+    remark = str(body.get("remark") or "").strip()[:40]
+    if not stickers.promote(int(sid), remark):
+        return web.json_response({"error": "没这张"}, status=404)
+    return web.json_response({"ok": True})
 
 
 async def api_sticker_file(request: web.Request) -> web.Response:
     """把收藏的图发给面板看。"""
     from pathlib import Path as _P
 
-    store = request.app["state"]["store"]
+    state = request.app["state"]
+    store = state["store"]
     sid = request.match_info["sid"]
     row = next((r for r in store.sticker_list(limit=500) if str(r["id"]) == str(sid)), None)
     if not row or not row.get("file"):
         raise web.HTTPNotFound()
-    path = _P(str(row["file"]))
-    if not path.exists():
+    stickers = state.get("stickers")
+    path = stickers.resolve(row["file"]) if stickers is not None else _P(str(row["file"]))
+    if path is None or not path.exists():
         raise web.HTTPNotFound()
     return web.FileResponse(path, headers={"Cache-Control": "private, max-age=86400"})
 
@@ -1460,18 +1583,25 @@ async def api_sticker_file(request: web.Request) -> web.Response:
 async def api_sticker_delete(request: web.Request) -> web.Response:
     from pathlib import Path as _P
 
-    store = request.app["state"]["store"]
+    state = request.app["state"]
+    store = state["store"]
     sid = request.match_info["sid"]
     row = next((r for r in store.sticker_list(limit=500) if str(r["id"]) == str(sid)), None)
     if not row:
         raise web.HTTPNotFound()
+    stickers = state.get("stickers")
+    if stickers is not None:
+        stickers.mark_deleted(row)  # 记忆里补一条「已删除」
+    store.sticker_vision_delete(str(row.get("hash") or ""))  # 图没了，账也没用了
     store.sticker_remove(int(sid))
     file = str(row.get("file") or "")
     if file:
-        try:
-            _P(file).unlink(missing_ok=True)
-        except OSError:
-            pass
+        path = stickers.resolve(file) if stickers is not None else _P(file)
+        if path is not None:
+            try:
+                path.unlink(missing_ok=True)
+            except OSError:
+                pass
     return web.json_response({"ok": True})
 
 
@@ -2027,6 +2157,7 @@ def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Applica
     app.router.add_get("/api/status", api_status)
     app.router.add_get("/api/plugins", api_plugins)
     app.router.add_post("/api/plugins/check-updates", api_plugins_check_updates)
+    app.router.add_post("/api/plugins/{pid}/update", api_plugin_apply_update)
     app.router.add_get("/api/plugins/{pid}/config", api_plugin_config)
     app.router.add_put("/api/plugins/{pid}/config", api_plugin_config)
     app.router.add_post("/api/plugins/{pid}/toggle", api_toggle)
@@ -2051,8 +2182,12 @@ def create_app(*, cfg: Any, state: dict[str, Any], cfg_path: str) -> web.Applica
     app.router.add_post("/api/stickers/sync", api_stickers_sync)
     app.router.add_get("/api/stickers/config", api_stickers_config)
     app.router.add_put("/api/stickers/config", api_stickers_config)
+    app.router.add_get("/api/look/config", api_look_config)
+    app.router.add_put("/api/look/config", api_look_config)
     app.router.add_post("/api/stickers/{sid}/remark", api_sticker_remark)
-    app.router.add_post("/api/stickers/{sid}/send", api_sticker_send)
+    app.router.add_post("/api/stickers/{sid}/keep", api_sticker_keep)
+    app.router.add_post("/api/stickers/{sid}/tags", api_sticker_tags)
+    app.router.add_post("/api/stickers/{sid}/meaning", api_sticker_meaning)
     app.router.add_get("/api/lexicon", api_lexicon)
     app.router.add_post("/api/lexicon/add", api_lexicon_add)
     app.router.add_post("/api/lexicon/remove", api_lexicon_remove)

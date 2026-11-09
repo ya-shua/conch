@@ -26,6 +26,7 @@ from __future__ import annotations
 import ctypes
 import json
 import os
+import shutil
 import socket
 import subprocess
 import sys
@@ -128,7 +129,60 @@ TOKEN_FILES = (
 )
 
 
-def _plugin_launch_items(roots: list[str]) -> list[dict[str, Any]]:
+def _host_config(cfg_path: str) -> dict[str, Any]:
+    """宿主 config.json（里面记着 node 在哪）。"""
+    try:
+        return json.loads(Path(cfg_path).read_text(encoding="utf-8-sig"))
+    except Exception:
+        return {}
+
+
+def _node_bin(cfg: dict[str, Any]) -> str:
+    """node 在哪：look.node → PATH → "node"（让子进程自己找）。"""
+    look = cfg.get("look") if isinstance(cfg.get("look"), dict) else {}
+    declared = str((look or {}).get("node") or "").strip()
+    if declared and Path(declared).exists():
+        return declared
+    return shutil.which("node") or "node"
+
+
+def _python_bin(plugin_dir: Path, cfg_path: str) -> str:
+    """python 在哪：插件自己的 .venv → 宿主 .venv → PATH。"""
+    for candidate in (
+        plugin_dir / ".venv" / "Scripts" / "pythonw.exe",
+        Path(cfg_path).resolve().parent / ".venv" / "Scripts" / "pythonw.exe",
+    ):
+        if candidate.exists():
+            return str(candidate)
+    return shutil.which("pythonw") or shutil.which("python") or "python"
+
+
+def _resolve_runtime(
+    launch: dict[str, Any], plugin_dir: Path, cfg_path: str
+) -> tuple[str, list[str]]:
+    """metadata 只写 runtime + entry，命令在这里拼 —— 挪了目录不用改路径。
+
+    launch: {"runtime": "node"|"python", "entry": "src/index.js", "args": [...]}
+    老写法（直接给 cmd）仍然认，原样返回。
+    """
+    cmd = str(launch.get("cmd") or "")
+    args = list(launch.get("args") or [])
+    runtime = str(launch.get("runtime") or "").strip().lower()
+    entry = str(launch.get("entry") or "").strip()
+    if cmd or not runtime:
+        return cmd, args
+    if runtime == "node":
+        cmd = _node_bin(_host_config(cfg_path))
+    elif runtime in ("python", "pythonw"):
+        cmd = _python_bin(plugin_dir, cfg_path)
+    else:
+        return "", args
+    if entry:
+        args = [str(Path(entry))] + args
+    return cmd, args
+
+
+def _plugin_launch_items(roots: list[str], cfg_path: str = "") -> list[dict[str, Any]]:
     """扫插件目录，把 metadata.json 里的 launch 段变成启动项。"""
     items: list[dict[str, Any]] = []
     seen: set[str] = set()
@@ -149,22 +203,26 @@ def _plugin_launch_items(roots: list[str]) -> list[dict[str, Any]]:
                 continue
             seen.add(pid)
             plugin_dir = meta_path.parent
-            cwd = str(launch.get("cwd") or plugin_dir)
+            raw_cwd = str(launch.get("cwd") or "").strip()
+            cwd = Path(raw_cwd) if raw_cwd else plugin_dir
+            if not cwd.is_absolute():
+                cwd = plugin_dir / cwd
+            cmd, args = _resolve_runtime(launch, plugin_dir, cfg_path)
+            if not cmd:
+                continue
             item = {
                 "id": pid,
                 "name": launch.get("name") or meta.get("name") or pid,
                 "note": launch.get("note") or meta.get("description") or "",
-                "cwd": cwd,
-                "cmd": launch.get("cmd") or "",
-                "args": list(launch.get("args") or []),
+                "cwd": str(cwd),
+                "cmd": cmd,
+                "args": args,
                 "port": launch.get("port"),
                 "from_plugin": str(plugin_dir),
             }
             for key in ("url", "url_token_file", "env", "log_dir", "secrets", "kind"):
                 if launch.get(key) is not None:
                     item[key] = launch[key]
-            if not item["cmd"]:
-                continue
             items.append(item)
     return items
 
@@ -351,11 +409,20 @@ def load(
         except Exception:
             items = []
     if plugin_roots:
-        known = {str(i["id"]) for i in items}
-        for extra in _plugin_launch_items(plugin_roots):
-            if str(extra["id"]) not in known:  # 手写的 launchers.json 优先
+        by_id = {str(i["id"]): i for i in items}
+        for extra in _plugin_launch_items(plugin_roots, str(cfg_path)):
+            eid = str(extra["id"])
+            cur = by_id.get(eid)
+            if cur is None:
                 items.append(extra)
-                known.add(str(extra["id"]))
+                by_id[eid] = extra
+                continue
+            # 手写的 launchers.json 优先，但它没写的字段（cmd/cwd/args/端口/地址）
+            # 由插件自己的 metadata 补上 —— 这样挪了目录只改插件那一份就够
+            for key in ("cwd", "cmd", "args", "port", "url", "url_token_file", "note"):
+                if not cur.get(key) and extra.get(key):
+                    cur[key] = extra[key]
+            cur.setdefault("from_plugin", extra.get("from_plugin"))
     return items
 
 
@@ -574,6 +641,15 @@ def start(item: dict[str, Any], secrets: dict[str, str] | None = None) -> dict[s
         raise RuntimeError("这条启动项缺 cwd 或 cmd")
     if not Path(cwd).exists():
         raise RuntimeError(f"目录不存在：{cwd}")
+
+    # 端口已经在听就别再起一份：重复启动轻则抢端口，重则它自己开日志失败直接退出
+    # （微光域就这样：第二个实例打不开 logs/lumisphere.log，一起就死）。
+    port = int(item.get("port") or 0)
+    if port and port_open(port):
+        pid = _pid_on_port(port)
+        if pid:
+            record_pid(str(item.get("id") or ""), pid)
+        return {"ok": True, "pid": pid, "already": True, "argv": [], "log": "", "via": "port"}
 
     values = dict(item.get("secret_values") or {})
     values.update({str(k): str(v) for k, v in (secrets or {}).items() if v})

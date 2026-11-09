@@ -133,7 +133,50 @@ _MIGRATIONS: list[str] = [
     );
     CREATE INDEX IF NOT EXISTS idx_lexhist_term ON lexicon_history(term);
     CREATE INDEX IF NOT EXISTS idx_lexhist_ts ON lexicon_history(id DESC);
+    """,
+    # v7：表情包她得看得懂 —— 视觉模型给的一句意思 + 标签，
+    # 另记一张「看过没」的表：同一张图永远只调一次模型
     """
+    ALTER TABLE stickers ADD COLUMN meaning TEXT NOT NULL DEFAULT '';
+    ALTER TABLE stickers ADD COLUMN tags TEXT NOT NULL DEFAULT '';
+    CREATE TABLE IF NOT EXISTS sticker_vision (
+        hash TEXT PRIMARY KEY,
+        meaning TEXT NOT NULL DEFAULT '',
+        tags TEXT NOT NULL DEFAULT '',
+        model TEXT NOT NULL DEFAULT '',
+        ts INTEGER NOT NULL DEFAULT 0,
+        status TEXT NOT NULL DEFAULT 'ok'
+    );
+    CREATE INDEX IF NOT EXISTS idx_sticker_vision_ts ON sticker_vision(ts DESC);
+    """,
+    # v8：两个区 + 重试
+    #   · 未收录的图在「缓存区」里等她要，命中缓存就不用再下载、再理解一次
+    #   · 模型调用失败的进「缓冲区」，记下第几次、什么时候再试
+    """
+    ALTER TABLE stickers ADD COLUMN last_seen INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE sticker_vision ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE sticker_vision ADD COLUMN next_at INTEGER NOT NULL DEFAULT 0;
+    CREATE INDEX IF NOT EXISTS idx_sticker_vision_next ON sticker_vision(next_at);
+    """,
+    # v9：按天计数（聊天看图每天几次这类），放在海螺自己的库里，不动记忆库
+    """
+    CREATE TABLE IF NOT EXISTS counters (
+        name TEXT NOT NULL,
+        day TEXT NOT NULL,
+        n INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (name, day)
+    );
+    """,
+    # v10：同一张图当天只认一次（按图链里的 fileid 认人），省钱也省时间
+    """
+    CREATE TABLE IF NOT EXISTS look_cache (
+        key TEXT PRIMARY KEY,
+        day TEXT NOT NULL,
+        text TEXT NOT NULL DEFAULT '',
+        ts INTEGER NOT NULL DEFAULT 0
+    );
+    CREATE INDEX IF NOT EXISTS idx_look_cache_ts ON look_cache(ts);
+    """,
 ]
 
 
@@ -542,27 +585,34 @@ class Store:
         ts: int = 0,
         source: str = "collected",
         remark: str = "",
+        meaning: str = "",
+        tags: str = "",
     ) -> int:
         """收一张表情；已经有了就把次数加一（用来排「最常用」）。"""
         with self._lock:
             cur = self.conn.cursor()
-            cur.execute("SELECT id FROM stickers WHERE hash = ?", (digest,))
+            cur.execute("SELECT id, source, meaning FROM stickers WHERE hash = ?", (digest,))
             row = cur.fetchone()
             if row:
                 cur.execute(
                     "UPDATE stickers SET uses = uses + 1,"
                     " file = CASE WHEN file = '' THEN ? ELSE file END,"
-                    " url = CASE WHEN url = '' THEN ? ELSE url END"
+                    " url = CASE WHEN url = '' THEN ? ELSE url END,"
+                    " meaning = CASE WHEN meaning = '' THEN ? ELSE meaning END,"
+                    " tags = CASE WHEN tags = '' THEN ? ELSE tags END"
                     " WHERE id = ?",
-                    (file, url, row["id"]),
+                    (file, url, meaning, tags, row["id"]),
                 )
                 self.conn.commit()
                 return int(row["id"])
             cur.execute(
                 "INSERT INTO stickers (hash, url, file, summary, sender_id, sender_name,"
-                " conv_id, uses, ts, source, remark)"
-                " VALUES (?,?,?,?,?,?,?,1,?,?,?)",
-                (digest, url, file, summary, sender_id, sender_name, conv_id, ts, source, remark),
+                " conv_id, uses, ts, source, remark, meaning, tags)"
+                " VALUES (?,?,?,?,?,?,?,1,?,?,?,?,?)",
+                (
+                    digest, url, file, summary, sender_id, sender_name, conv_id, ts,
+                    source, remark, meaning, tags,
+                ),
             )
             self.conn.commit()
             return int(cur.lastrowid or 0)
@@ -598,16 +648,26 @@ class Store:
             return dict(row) if row else None
 
     def sticker_find(self, name: str) -> dict[str, Any] | None:
-        """按备注 / 摘要 / 来源人找一张，给「发个 xxx 表情」用。"""
+        """按备注 / 意思 / 标签 / 摘要 / 来源人找一张，给「发个 xxx 表情」用。
+
+        先认「正好就是这个标签」的（`无语` 命中 tag=无语 的那张），
+        没有再看包含关系；同分时用过的优先。
+        """
         text = (name or "").strip()
         if not text:
             return None
         with self._lock:
             cur = self.conn.execute(
-                "SELECT * FROM stickers WHERE file != '' AND"
-                " (remark LIKE ? OR summary LIKE ? OR sender_name LIKE ?)"
-                " ORDER BY uses DESC, id DESC LIMIT 1",
-                (f"%{text}%", f"%{text}%", f"%{text}%"),
+                "SELECT *, CASE"
+                "  WHEN tags = ? THEN 2"
+                "  WHEN remark = ? THEN 1"
+                "  ELSE 0 END AS hit"
+                " FROM stickers WHERE file != '' AND source != 'candidate' AND"
+                " (remark LIKE ? OR meaning LIKE ? OR tags LIKE ? OR summary LIKE ?"
+                "  OR sender_name LIKE ?)"
+                " ORDER BY hit DESC, uses DESC, id DESC LIMIT 1",
+                (text, text, f"%{text}%", f"%{text}%", f"%{text}%", f"%{text}%",
+                 f"%{text}%"),
             )
             row = cur.fetchone()
             return dict(row) if row else None
@@ -615,12 +675,13 @@ class Store:
     def sticker_recent(self, limit: int = 20) -> list[dict[str, Any]]:
         with self._lock:
             cur = self.conn.execute(
-                "SELECT * FROM stickers ORDER BY uses DESC, id DESC LIMIT ?", (int(limit),)
+                "SELECT * FROM stickers WHERE source != 'candidate'"
+                " ORDER BY uses DESC, id DESC LIMIT ?", (int(limit),)
             )
             return [dict(r) for r in cur.fetchall()]
 
     def sticker_random(self, exclude_ids: list[int] | None = None) -> dict[str, Any] | None:
-        sql = "SELECT * FROM stickers WHERE file != ''"
+        sql = "SELECT * FROM stickers WHERE file != '' AND source != 'candidate'"
         args: list[Any] = []
         if exclude_ids:
             sql += " AND id NOT IN (" + ",".join("?" * len(exclude_ids)) + ")"
@@ -628,6 +689,313 @@ class Store:
         sql += " ORDER BY RANDOM() LIMIT 1"
         with self._lock:
             cur = self.conn.execute(sql, tuple(args))
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    # ---------- 候选池：她还没说要的 ----------
+
+    def sticker_candidates(self, limit: int = 20) -> list[dict[str, Any]]:
+        with self._lock:
+            # 又见到同一张时 last_seen 会刷新，它就该排到最上面
+            cur = self.conn.execute(
+                "SELECT * FROM stickers WHERE source = 'candidate'"
+                " ORDER BY COALESCE(NULLIF(last_seen, 0), ts) DESC, id DESC LIMIT ?",
+                (int(limit),)
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def sticker_promote(self, sticker_id: int, remark: str = "") -> bool:
+        """候选 → 正式收下（她开口要的，或者主人在面板上点的）。"""
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                "UPDATE stickers SET source = 'collected',"
+                " remark = CASE WHEN ? != '' THEN ? ELSE remark END"
+                " WHERE id = ?",
+                (remark, remark[:40], int(sticker_id)),
+            )
+            self.conn.commit()
+            return cur.rowcount > 0
+
+    def sticker_expire_candidates(self, days: int, now_ms: int = 0) -> list[str]:
+        """候选放太久就清掉，返回要删的文件名。
+
+        时间从「最后一次见到」算：她又被刷到一次，就重新开始计时。
+        """
+        if days <= 0:
+            return []
+        cutoff = (now_ms or int(time.time() * 1000)) - int(days) * 86400_000
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute(
+                "SELECT id, file FROM stickers WHERE source = 'candidate'"
+                " AND COALESCE(NULLIF(last_seen, 0), ts) < ?",
+                (cutoff,),
+            )
+            rows = [(int(r[0]), str(r[1] or "")) for r in cur.fetchall()]
+            if not rows:
+                return []
+            cur.executemany(
+                "DELETE FROM stickers WHERE id = ?", [(sid,) for sid, _ in rows]
+            )
+            self.conn.commit()
+            return [f for _, f in rows if f]
+
+    def sticker_set_meaning(self, sticker_id: int, meaning: str, tags: str = "") -> None:
+        with self._lock:
+            self.conn.execute(
+                "UPDATE stickers SET meaning = ?, tags = ? WHERE id = ?",
+                (meaning[:200], tags[:200], int(sticker_id)),
+            )
+            self.conn.commit()
+
+    # ---------- 视觉模型看过的账（同一张只调一次） ----------
+
+    def sticker_vision_get(self, digest: str) -> dict[str, Any] | None:
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT * FROM sticker_vision WHERE hash = ?", (str(digest),)
+            )
+            row = cur.fetchone()
+            return dict(row) if row else None
+
+    def sticker_vision_put(
+        self, digest: str, meaning: str, tags: str, model: str = "", status: str = "ok"
+    ) -> None:
+        """看得懂就记一条（attempts+1、清掉重试时间）。"""
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO sticker_vision (hash, meaning, tags, model, ts, status, attempts, next_at)"
+                " VALUES (?,?,?,?,?,?,1,0)"
+                " ON CONFLICT(hash) DO UPDATE SET meaning=excluded.meaning,"
+                " tags=excluded.tags, model=excluded.model, ts=excluded.ts,"
+                " status=excluded.status, attempts=attempts + 1, next_at=0",
+                (str(digest), meaning[:200], tags[:200], model[:40],
+                 int(time.time() * 1000), status),
+            )
+            self.conn.commit()
+
+    def counter_bump(self, name: str, day: str, step: int = 1) -> int:
+        """今天这个计数 +1（跨天自动从 0 开始），返回加完的值。"""
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO counters (name, day, n) VALUES (?,?,?)"
+                " ON CONFLICT(name, day) DO UPDATE SET n = n + excluded.n",
+                (str(name), str(day), int(step)),
+            )
+            self.conn.commit()
+            cur = self.conn.execute(
+                "SELECT n FROM counters WHERE name = ? AND day = ?", (str(name), str(day))
+            )
+            row = cur.fetchone()
+            return int(row["n"]) if row else int(step)
+
+    def counter_get(self, name: str, day: str) -> int:
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT n FROM counters WHERE name = ? AND day = ?", (str(name), str(day))
+            )
+            row = cur.fetchone()
+            return int(row["n"]) if row else 0
+
+    def counter_cleanup(self, keep_days: int = 14) -> int:
+        cutoff = time.strftime("%Y-%m-%d", time.localtime(time.time() - keep_days * 86400))
+        with self._lock:
+            cur = self.conn.execute("DELETE FROM counters WHERE day < ?", (cutoff,))
+            self.conn.commit()
+            return max(0, cur.rowcount)
+
+    def look_cache_get(self, key: str, day: str) -> str:
+        """同一张图今天认过没有：认过就直接用那句描述，不再调模型、不占额度。"""
+        if not key:
+            return ""
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT text FROM look_cache WHERE key = ? AND day = ?", (str(key), str(day))
+            )
+            row = cur.fetchone()
+            return str(row["text"]) if row else ""
+
+    def look_cache_put(self, key: str, day: str, text: str) -> None:
+        if not key or not text:
+            return
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO look_cache (key, day, text, ts) VALUES (?,?,?,?)"
+                " ON CONFLICT(key) DO UPDATE SET day = excluded.day, text = excluded.text, ts = excluded.ts",
+                (str(key), str(day), str(text), int(time.time())),
+            )
+            self.conn.commit()
+
+    def look_cache_cleanup(self, keep_days: int = 1) -> int:
+        """聊天看图只是「当天别重复花钱」：默认只留今天，跨天就清。"""
+        cutoff = time.strftime(
+            "%Y-%m-%d", time.localtime(time.time() - max(0, int(keep_days) - 1) * 86400)
+        )
+        with self._lock:
+            cur = self.conn.execute("DELETE FROM look_cache WHERE day < ?", (cutoff,))
+            self.conn.commit()
+            return max(0, cur.rowcount)
+
+    def sticker_vision_delete(self, digest: str) -> None:
+        """图删了，账也删：没图的意思没法核对，留着只是占地方。"""
+        if not digest:
+            return
+        with self._lock:
+            self.conn.execute("DELETE FROM sticker_vision WHERE hash = ?", (str(digest),))
+            self.conn.commit()
+
+    def sticker_vision_prune_orphans(self) -> int:
+        """清掉图已经不在库里的账（历史遗留 / 候选过期删掉的）。"""
+        with self._lock:
+            cur = self.conn.execute(
+                "DELETE FROM sticker_vision WHERE hash NOT IN (SELECT hash FROM stickers)"
+            )
+            self.conn.commit()
+            return max(0, cur.rowcount)
+
+    def sticker_vision_last_model(self) -> str:
+        """最近一次真看成用的哪个模型（面板显示用：look 块没写 model 时靠它）。"""
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT model FROM sticker_vision WHERE status = 'ok' AND model != ''"
+                " ORDER BY ts DESC LIMIT 1"
+            )
+            row = cur.fetchone()
+            return str(row["model"]) if row else ""
+
+    def sticker_vision_fail(self, digest: str, next_at: int = 0) -> int:
+        """没看成：记一次失败 + 下次什么时候再试，返回已经试了几次。"""
+        now = int(time.time() * 1000)
+        with self._lock:
+            self.conn.execute(
+                "INSERT INTO sticker_vision (hash, meaning, tags, model, ts, status, attempts, next_at)"
+                " VALUES (?, '', '', '', ?, 'fail', 1, ?)"
+                " ON CONFLICT(hash) DO UPDATE SET ts=excluded.ts, status='fail',"
+                " attempts=attempts + 1, next_at=excluded.next_at",
+                (str(digest), now, int(next_at)),
+            )
+            self.conn.commit()
+            cur = self.conn.execute(
+                "SELECT attempts FROM sticker_vision WHERE hash = ?", (str(digest),)
+            )
+            row = cur.fetchone()
+            return int(row["attempts"]) if row else 1
+
+    def sticker_vision_due(self, limit: int = 20, now_ms: int = 0) -> list[dict[str, Any]]:
+        """缓冲区里到点该重试的（按排队先后）。"""
+        now = now_ms or int(time.time() * 1000)
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT * FROM sticker_vision WHERE status = 'fail' AND next_at <= ?"
+                " ORDER BY next_at ASC LIMIT ?",
+                (now, int(limit)),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def sticker_vision_failed_hashes(self) -> set[str]:
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT hash FROM sticker_vision WHERE status = 'fail'"
+            )
+            return {str(r["hash"]) for r in cur.fetchall()}
+
+    def sticker_vision_trim_fails(self, max_rows: int) -> int:
+        """缓冲区（status=fail）最多排这么多张，超出丢最旧的。"""
+        if max_rows <= 0:
+            return 0
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT hash FROM sticker_vision WHERE status = 'fail'"
+                " ORDER BY next_at DESC, ts DESC LIMIT -1 OFFSET ?",
+                (int(max_rows),),
+            )
+            extra = [str(r["hash"]) for r in cur.fetchall()]
+            if extra:
+                self.conn.executemany(
+                    "DELETE FROM sticker_vision WHERE hash = ?", [(h,) for h in extra]
+                )
+                self.conn.commit()
+            return len(extra)
+
+    def sticker_vision_prune(self, keep_days: int, max_rows: int, keep_hashes: set[str]) -> int:
+        """清理理解记录：已收下的永久留；没收录的过 N 天删；总数超上限按时间淘汰。"""
+        removed = 0
+        with self._lock:
+            if keep_days > 0:
+                cutoff = int(time.time() * 1000) - int(keep_days) * 86400_000
+                keep = [h for h in keep_hashes]
+                sql = "DELETE FROM sticker_vision WHERE ts < ?"
+                args: list[Any] = [cutoff]
+                if keep:
+                    sql += " AND hash NOT IN (" + ",".join("?" * len(keep)) + ")"
+                    args.extend(keep)
+                cur = self.conn.execute(sql, tuple(args))
+                removed += max(0, cur.rowcount)
+            if max_rows > 0:
+                cur = self.conn.execute(
+                    "SELECT hash FROM sticker_vision ORDER BY ts DESC LIMIT -1 OFFSET ?",
+                    (int(max_rows),),
+                )
+                extra = [str(r["hash"]) for r in cur.fetchall() if str(r["hash"]) not in keep_hashes]
+                if extra:
+                    self.conn.executemany(
+                        "DELETE FROM sticker_vision WHERE hash = ?", [(h,) for h in extra]
+                    )
+                    removed += len(extra)
+            self.conn.commit()
+        return removed
+
+    def sticker_vision_count_today(self) -> int:
+        """今天「真看成了」几张（失败不占每天额度）。"""
+        start = int(time.time() // 86400 * 86400 * 1000)
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT COUNT(*) AS n FROM sticker_vision WHERE ts >= ? AND status = 'ok'",
+                (start,),
+            )
+            return int(cur.fetchone()["n"])
+
+    def sticker_touch(self, digest: str) -> None:
+        """缓存命中：更新 last_seen（淘汰时专挑最久没出现的）。"""
+        with self._lock:
+            self.conn.execute(
+                "UPDATE stickers SET last_seen = ? WHERE hash = ?",
+                (int(time.time() * 1000), str(digest)),
+            )
+            self.conn.commit()
+
+    def sticker_oldest_candidates(self, limit: int = 1) -> list[dict[str, Any]]:
+        """缓存区里最久没出现的那几张（淘汰用）。"""
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT * FROM stickers WHERE source = 'candidate'"
+                " ORDER BY COALESCE(NULLIF(last_seen, 0), ts) ASC LIMIT ?",
+                (int(limit),),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+    def sticker_trim_candidates(self, max_items: int) -> list[str]:
+        """缓存区超过上限：淘汰最久没被提过的，返回要删的文件。"""
+        if max_items <= 0:
+            return []
+        with self._lock:
+            cur = self.conn.execute(
+                "SELECT id, file FROM stickers WHERE source = 'candidate'"
+                " ORDER BY COALESCE(NULLIF(last_seen, 0), ts) ASC"
+            )
+            rows = [(int(r["id"]), str(r["file"] or "")) for r in cur.fetchall()]
+            extra = rows[: max(0, len(rows) - int(max_items))]
+            if extra:
+                self.conn.executemany(
+                    "DELETE FROM stickers WHERE id = ?", [(sid,) for sid, _ in extra]
+                )
+                self.conn.commit()
+            return [f for _, f in extra if f]
+
+    def sticker_by_hash(self, digest: str) -> dict[str, Any] | None:
+        with self._lock:
+            cur = self.conn.execute("SELECT * FROM stickers WHERE hash = ?", (str(digest),))
             row = cur.fetchone()
             return dict(row) if row else None
 
@@ -647,6 +1015,20 @@ class Store:
             )
             self.conn.commit()
             return cur.rowcount > 0
+
+    def sticker_files(self) -> list[tuple[int, str]]:
+        """所有记了本地文件的表情：[(id, file)]，给路径迁移用。"""
+        with self._lock:
+            cur = self.conn.cursor()
+            cur.execute("SELECT id, file FROM stickers WHERE file != ''")
+            return [(int(r[0]), str(r[1])) for r in cur.fetchall()]
+
+    def sticker_set_file(self, sticker_id: int, file: str) -> None:
+        with self._lock:
+            self.conn.execute(
+                "UPDATE stickers SET file = ? WHERE id = ?", (file, int(sticker_id))
+            )
+            self.conn.commit()
 
     def sticker_sync_favorites(self, items: list[dict[str, Any]], ts: int = 0) -> int:
         """把 QQ「我的表情」整批写进来（按 url 去重，不动使用次数）。返回新增条数。"""
