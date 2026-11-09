@@ -130,11 +130,33 @@ TOKEN_FILES = (
 
 
 def _host_config(cfg_path: str) -> dict[str, Any]:
-    """宿主 config.json（里面记着 node 在哪）。"""
+    """宿主 config.json（里面记着 node 在哪）。
+
+    传进来的可能是 config.json，也可能是 launchers.json —— 启动脚本
+    （scripts/start_all.py）一直是拿 launchers.json 进来调 load() 的。
+    以前这里照样按「配置」读，读到的是一个 list，`cfg.get("look")` 直接抛
+    `'list' object has no attribute 'get'`，于是整份启动清单读不出来，
+    一键启动只会把「路径不对」记进 start.log（环形的心/娱乐/微光域/留影 都没起来）。
+    """
+    path = Path(cfg_path)
     try:
-        return json.loads(Path(cfg_path).read_text(encoding="utf-8-sig"))
+        data = json.loads(path.read_text(encoding="utf-8-sig"))
     except Exception:
-        return {}
+        data = {}
+    if isinstance(data, dict):
+        return data
+    # 给的是 launchers.json：找同目录的 config.json
+    for name in ("config.json", "config.example.json"):
+        sibling = path.with_name(name)
+        if not sibling.exists():
+            sibling = path.parent / name
+        try:
+            found = json.loads(sibling.read_text(encoding="utf-8-sig"))
+        except Exception:
+            continue
+        if isinstance(found, dict):
+            return found
+    return {}
 
 
 def _node_bin(cfg: dict[str, Any]) -> str:
@@ -410,7 +432,12 @@ def load(
             items = []
     if plugin_roots:
         by_id = {str(i["id"]): i for i in items}
-        for extra in _plugin_launch_items(plugin_roots, str(cfg_path)):
+        try:
+            extras = _plugin_launch_items(plugin_roots, str(cfg_path))
+        except Exception:
+            # 某个插件的 metadata 写坏了，不该让整份启动清单都读不出来
+            extras = []
+        for extra in extras:
             eid = str(extra["id"])
             cur = by_id.get(eid)
             if cur is None:

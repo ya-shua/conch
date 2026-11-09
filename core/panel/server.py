@@ -1497,13 +1497,9 @@ async def api_sticker_remark(request: web.Request) -> web.Response:
     sid = request.match_info["sid"]
     body: dict[str, Any] = await request.json()
     remark = str(body.get("remark") or "").strip()[:40]
-    before = store.sticker_get(int(sid))
     if not store.sticker_set_remark(int(sid), remark):
         return web.json_response({"error": "没这张"}, status=404)
-    stickers = request.app["state"].get("stickers")
-    row = store.sticker_get(int(sid))
-    if stickers is not None and row is not None and remark:
-        stickers.remember_renamed(row, str((before or {}).get("remark") or ""))
+    # 表情只归表情包库：改名就是改 remark（提示词里会带），不再往记忆库写 ring_note
     return web.json_response({"ok": True, "remark": remark})
 
 
@@ -1590,8 +1586,7 @@ async def api_sticker_delete(request: web.Request) -> web.Response:
     if not row:
         raise web.HTTPNotFound()
     stickers = state.get("stickers")
-    if stickers is not None:
-        stickers.mark_deleted(row)  # 记忆里补一条「已删除」
+    # 表情只归表情包库：删了就删了，不再往记忆库补一条「已删除」
     store.sticker_vision_delete(str(row.get("hash") or ""))  # 图没了，账也没用了
     store.sticker_remove(int(sid))
     file = str(row.get("file") or "")

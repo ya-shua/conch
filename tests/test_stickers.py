@@ -137,42 +137,66 @@ def test_attach_registers_keep_tool(env):
     assert "keep_sticker" in tools.names()
 
 
-def test_remember_writes_into_memory(env):
-    """她收下的表情要进记忆库（speaker=self，记意思和标签）。"""
-    seen = {}
+def test_keep_does_not_write_memory(env, monkeypatch):
+    """收下表情只进表情包库，不往记忆库投 —— 意思和标签就在 stickers 表里。
+
+    （以前没有视觉模型，意思只能借记忆库记一句；现在视觉模型直接写库，
+    记忆里那份是重复的，改图的意思时还不会跟着变。）
+    """
+    calls = []
 
     class FakePool:
         async def call_raw(self, server, tool, payload):
-            seen.update({"server": server, "tool": tool, "payload": payload})
+            calls.append((server, tool, payload))
             return "ok"
 
     env.st.services["mcppool"] = FakePool()
-    sid = env.store.sticker_add("h1", summary="[动画表情]")
-    env.store.sticker_set_meaning(sid, "一只猫躺着摆烂", "摆烂、累")
-    asyncio.run(env.st.remember(sid))
-    assert seen["server"] == "ring" and seen["tool"] == "ring_ingest"
-    p = seen["payload"]
-    assert p["speaker"] == "self"
-    assert p["content"].startswith("[表情]：一只猫躺着摆烂")
-    assert "摆烂" in p["content"] and "【表情包：摆烂】" in p["content"]
-    assert "note" not in p  # 没给名字就不写 note
+    monkeypatch.setattr(Stickers, "_download", staticmethod(lambda url: b"GIF89a.nomem"))
+    rows = env.st.collect(_payload())
+    sid = rows[0][0]
+    assert env.st.promote(sid, "猫猫") is True
+
+    row = env.store.sticker_get(sid)
+    assert row["source"] == "collected"
+    assert row["remark"] == "猫猫"
+    assert calls == []  # 一条都没往外发
 
 
-def test_remember_keeps_her_own_words_in_note(env):
-    """她自己起过名字：机器写事实，她的说法放 note（说什么由她发挥）。"""
-    seen = {}
-
-    class FakePool:
-        async def call_raw(self, server, tool, payload):
-            seen["payload"] = payload
-            return "ok"
-
-    env.st.services["mcppool"] = FakePool()
-    sid = env.store.sticker_add("h2", summary="[动画表情]")
-    env.store.sticker_set_meaning(sid, "一只猫躺着摆烂", "摆烂")
+def test_meaning_and_remark_live_in_sticker_library(env):
+    """改图的意思、起个名字，都只落库；提示词读的也是这里。"""
+    sid = env.store.sticker_add("m1", summary="[动画表情]")
+    env.store.sticker_set_meaning(sid, "一只猫四脚朝天躺着摆烂", "摆烂、累")
     env.store.sticker_set_remark(sid, "这就是我现在的状态")
-    asyncio.run(env.st.remember(sid))
-    assert seen["payload"]["note"] == "我的说法：这就是我现在的状态"
+
+    row = env.store.sticker_get(sid)
+    assert row["meaning"] == "一只猫四脚朝天躺着摆烂"
+    assert row["tags"] == "摆烂、累"
+    assert row["remark"] == "这就是我现在的状态"
+
+    payload = {"extra": ""}
+    env.st.on_prompt(payload)
+    assert "四脚朝天" in payload["extra"]
+
+
+def test_delete_only_removes_from_library(env):
+    """删掉一张：库里的行没了，不往记忆库写「已删除」。"""
+    calls = []
+
+    class FakePool:
+        async def call_raw(self, server, tool, payload):
+            calls.append((tool, payload))
+            return "ok"
+
+    env.st.services["mcppool"] = FakePool()
+    sid = env.store.sticker_add("d1", summary="[动画表情]", file="d1.gif",
+                                source="collected")
+    (env.st.dir / "d1.gif").write_bytes(b"x")
+    env.store.sticker_set_meaning(sid, "猫躺着摆烂", "摆烂")
+
+    env.store.sticker_vision_delete("d1")
+    env.store.sticker_remove(sid)
+    assert env.store.sticker_get(sid) is None
+    assert calls == []
 
 
 def test_failure_goes_into_buffer_then_retries(env):
@@ -350,38 +374,6 @@ def test_vision_status_reports_usage(env):
     assert v["daily_max"] == 30 and v["used_today"] == 0 and v["remaining"] == 30
     env.cfg.raw["stickers"] = {"understand_daily_max": 0}
     assert env.st.vision_status()["remaining"] == -1
-
-
-def test_deleted_and_renamed_go_into_memory(env):
-    seen = []
-
-    class FakePool:
-        async def call_raw(self, server, tool, payload):
-            seen.append((tool, payload))
-            return "ok"
-
-    env.st.services["mcppool"] = FakePool()
-    sid = env.store.sticker_add("h9", summary="[动画表情]", file="h9.gif")
-    env.store.sticker_set_meaning(sid, "猫躺着摆烂", "摆烂")
-    row = env.store.sticker_get(sid)
-    env.st.mark_deleted(row)
-    asyncio.run(env.st._remember_deleted(row))
-    env.store.sticker_set_remark(sid, "摆烂猫")
-
-    async def renamed():
-        env.st.remember_renamed(env.store.sticker_get(sid), "旧名字")
-        await asyncio.sleep(0)
-
-    asyncio.run(renamed())
-    deleted = [(t, p) for t, p in seen if "现在删了" in str(p.get("content") or "")]
-    renamed = [(t, p) for t, p in seen if t == "ring_note"]
-    assert deleted and deleted[0][1]["message_id"].endswith(":deleted")
-    # 改名只追加批注（一条记忆），不新写一条
-    assert renamed and renamed[0][1]["message_id"] == "sticker:h9"
-    assert "改叫「摆烂猫」" in renamed[0][1]["note"] or "我的说法：摆烂猫" in renamed[0][1]["note"]
-    assert "旧名字" in renamed[0][1]["note"]
-    assert renamed[0][1]["mode"] == "replace"  # 覆盖，不越堆越长
-    assert renamed[0][1]["kind"] == "visual"  # 批注分区：图片说明单独一列
 
 
 def test_retag_uses_human_description(env):

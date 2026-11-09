@@ -101,8 +101,9 @@ def _already_running(item: dict) -> bool:
     )
     try:
         out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", cmd],
-            capture_output=True, text=True, timeout=20,
+            ["powershell", "-NoProfile", "-Command",
+             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + cmd],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
             creationflags=NO_WINDOW, startupinfo=_startupinfo(),
         ).stdout.strip()
         return bool(out)
@@ -123,7 +124,9 @@ def _launch_items() -> list[dict]:
         roots = [str(ROOT / "plugins")]
         for extra in data.get("plugin_paths") or []:
             roots.append(str(extra))
-        return L.load(ROOT / "launchers.json", plugin_roots=roots)
+        # 传 config.json：launchers.json 是「清单」，缺的 cwd/cmd 要由 config 里的
+        # look.node 等设置 + 各插件 metadata 补上（以前传错文件，一键启动起不来）
+        return L.load(CONFIG, plugin_roots=roots)
     except Exception as exc:  # 兜底：至少把 launchers.json 里的起来
         log(f"  读启动清单出错（{exc}），只用 launchers.json")
         path = ROOT / "launchers.json"
@@ -243,8 +246,9 @@ def _guard_running() -> bool:
     )
     try:
         out = subprocess.run(
-            ["powershell", "-NoProfile", "-Command", cmd],
-            capture_output=True, text=True, timeout=20,
+            ["powershell", "-NoProfile", "-Command",
+             "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; " + cmd],
+            capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=20,
             creationflags=NO_WINDOW, startupinfo=_startupinfo(),
         ).stdout.strip()
         return bool(out)

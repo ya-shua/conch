@@ -1,5 +1,44 @@
 # 更新记录
 
+## v1.1.4（2026-11-09）
+
+- **表情包不再写进记忆库**。以前没有视觉模型，表情的意思没地方存，只能借记忆库记一句
+  （`conv_key=self:stickers`）—— 那是便签，不是记忆。现在视觉模型把意思和标签写进
+  表情包库（`stickers.meaning` / `tags`），提示词列清单、发图找图都读那里，**只有一份**；
+  记忆里再存一份是重复的：在面板改了图的意思，记忆那条不会跟着变，错的一直留着，还会被检索出来当真
+- 删掉整条写入链：`_ingest` / `remember` / `mark_deleted` / `_remember_deleted` /
+  `remember_renamed` / `_note`。面板改名只改 `remark`，删除只删库行和文件
+- 她的说法（`remark`）继续跟着图走，提示词里带着；记忆库只装**她自己经历的事**，
+  由她自己用 `ring_remember` 决定记不记
+- 她真要记住“这图让我笑了半天”，那是她的记忆，走圈和遗忘规则 —— 表情本身不参与遗忘：
+  图还在，意思就在；图删了，意思一起没
+- 旧数据：库里那条四条拼一起的记忆（连同 4 条 `seen_messages`、1 行 `conv_state`）已删除，
+  删前 dump 到 `data/sticker-memory-backup-*.json` 留底
+- `docs/表情包.md` 那节重写成「意思只存在表情包库，不进记忆库」
+
+## v1.1.3（2026-11-09）
+
+- **修：四张表情被拼成一条记忆**。收下的每张表情都写一条 `ring_ingest`（`conv_key=self:stickers`、
+  `message_id=sticker:<sha1>`），四张相隔 2–9 秒，正好落进环形的心「间隔 ≤ 90 秒」的合并窗口，
+  于是变成一条「我收了一张表情包…；…；…；…」
+- 现在投递时带 `no_merge: true`（环形的心 v1.5.5 支持）：一条就是一条，
+  幂等照旧、不占合并游标
+- 文档「意思会进记忆库」那节补了这一条；`tests/test_stickers.py` 加了断言
+
+## v1.1.2（2026-11-09）
+
+- **修：一键启动起不来别的服务（环形的心 / 娱乐 / 微光域 / 留影）**。
+  `scripts/start_all.py` 一直是拿 `launchers.json` 去调 `launchers.load()`，
+  而 `_host_config()` 按 `config.json` 的样子读 `.get("look")` —— 拿到的是个 list，
+  直接抛 `'list' object has no attribute 'get'`。异常被兜住后只退回「裸清单」，
+  那几条的 `cwd`/`cmd` 空着，于是 `start.log` 里全是「路径不对：」，服务一个没起
+- 修法：`_host_config()` 认两种文件（config.json / launchers.json，后者找同目录 config.json）；
+  `start_all.py` 改成传 `CONFIG`；`load()` 里插件清单出错不再拖垮整份清单
+- 顺手修：`start_all.py` 两处 PowerShell 调用没指定编码（中文系统吐 GBK，读线程报
+  `UnicodeDecodeError`），现在带 `[Console]::OutputEncoding = UTF8` + `errors="replace"`
+- 实测：杀掉微光域后跑一键启动 → 4.1s 内「起 微光域（端口 8765）」，七项全绿
+- 新增 `tests/test_launch_manifest.py`（两例：给 launchers.json 也要补出 cwd/cmd）
+
 ## v1.1.1（2026-11-09）
 
 - **修：点启动却打开 GitHub / 面板打不开** —— 「打开面板」原来按窗口标题认窗口

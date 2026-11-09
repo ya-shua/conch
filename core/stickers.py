@@ -580,10 +580,6 @@ class Stickers:
                 meaning, tags = await self.describe(digest, path)
                 if meaning or tags:
                     self.store.sticker_set_meaning(sid, meaning, tags)
-                    row = self.store.sticker_get(int(sid))
-                    # 只有真收下的才进记忆库；候选只是"看到过"，不进
-                    if row and row.get("source") != "candidate":
-                        await self.remember(int(sid))
             except Exception as exc:
                 self.log.debug("看懂表情失败（不影响收）：%s", exc)
 
@@ -650,109 +646,13 @@ class Stickers:
             meaning, tags = await self.describe(digest, path)
             if meaning or tags:
                 self.store.sticker_set_meaning(int(row["id"]), meaning, tags)
-                if row.get("source") != "candidate":
-                    await self.remember(int(row["id"]))
                 self.log.info("缓冲区里补看明白一张：%s", meaning[:30])
 
-    async def _ingest(self, content: str, message_id: str, note: str = "") -> None:
-        """往记忆库投一条（speaker=self，三圈，私聊槽位）。"""
-        pool = self.services.get("mcppool")
-        if pool is None or not content.strip():
-            return
-        payload = {
-            "content": content,
-            "speaker": "self",
-            "source": "private",
-            "conv_key": "self:stickers",
-            "ring": "ring3",
-            "message_id": message_id,
-        }
-        if note:
-            payload["note"] = note
-            payload["note_kind"] = "visual"  # 批注分区：图片说明不跟语音转写混
-        try:
-            await pool.call_raw("ring", "ring_ingest", payload)
-        except Exception as exc:
-            self.log.debug("表情入记忆库失败（不影响用）：%s", exc)
-
-    def _spawn(self, coro) -> None:
-        try:
-            asyncio.get_running_loop().create_task(coro)
-        except RuntimeError:
-            coro.close()  # 没有事件循环（离线脚本）就算了
-
-    async def remember(self, sticker_id: int) -> None:
-        """把「我手里有这张表情、什么意思」写进记忆库 —— 她以后翻得到。"""
-        row = self.store.sticker_get(int(sticker_id))
-        if not row:
-            return
-        meaning = str(row.get("meaning") or "").strip()
-        tags = str(row.get("tags") or "").strip()
-        if not meaning and not tags:
-            return
-        label = self._label(row)
-        # 机器写的是事实（[表情]：什么意思）；她给过的说法放 note，她自己怎么讲由她发挥
-        content = f"[表情]：{meaning or label}"
-        if tags:
-            content += f"（适合：{tags}）"
-        usable = (tags.split("、")[0] if tags else label)
-        content += f"。发「【表情包：{usable}】」用它。"
-        remark = str(row.get("remark") or "").strip()
-        await self._ingest(
-            content,
-            f"sticker:{row.get('hash') or sticker_id}",
-            note=f"我的说法：{remark}" if remark else "",
-        )
-
-    def mark_deleted(self, row: dict) -> None:
-        """删掉一张她收下的表情：记忆里补一条「已删除」的事实。"""
-        if not row or row.get("source") == "candidate":
-            return  # 候选本来就没进记忆
-        self._spawn(self._remember_deleted(row))
-
-    async def _remember_deleted(self, row: dict) -> None:
-        meaning = str(row.get("meaning") or "").strip()
-        tags = str(row.get("tags") or "").strip()
-        if not meaning and not tags:
-            return
-        label = self._label(row)
-        await self._ingest(
-            f"[表情]：{meaning or label}（这个我之前有，现在删了）",
-            f"sticker:{row.get('hash') or row.get('id')}:deleted",
-            note=f"我的说法：{row.get('remark')}" if row.get("remark") else "",
-        )
-
-    def remember_renamed(self, row: dict, old_remark: str = "") -> None:
-        """她改了名字：只往旧记忆的 note 追加一句，不新写一条。
-
-        新写一条的话，检索会同时捞到旧条和新条（token 翻倍、还可能矛盾），
-        两条还各自参与遗忘 —— 所以走环形的心那个机器工具 `ring_note`。
-        """
-        meaning = str(row.get("meaning") or "").strip()
-        remark = str(row.get("remark") or "").strip()
-        if not meaning or not remark or row.get("source") == "candidate":
-            return
-        note = f"我的说法：{remark}"
-        if old_remark and old_remark != remark:
-            note = f"我的说法：{remark}（原来叫「{old_remark}」）"
-        self._spawn(self._note(f"sticker:{row.get('hash')}", note))
-
-    async def _note(self, message_id: str, note: str) -> None:
-        pool = self.services.get("mcppool")
-        if pool is None:
-            return
-        try:
-            # replace：note 是「我的说法」这种一位字段，覆盖比越堆越长干净；
-            # 原文（content）不动，历史还在总库
-            await pool.call_raw(
-                "ring", "ring_note",
-                {"message_id": message_id, "note": note, "mode": "replace", "kind": "visual"},
-            )
-        except Exception as exc:
-            self.log.debug("往记忆里补批注失败（不影响用）：%s", exc)
-
     def promote(self, sticker_id: int, remark: str = "") -> bool:
-        """候选 → 正式收下：文件从缓存区搬进正式目录。"""
+        """候选 → 正式收下：文件从缓存区搬进正式目录。
+
+        只动表情包库，不写记忆库 —— 意思和标签在 stickers 表里，记忆库只装她自己的经历。
+        """
         row = self.store.sticker_get(int(sticker_id))
         ok = self.store.sticker_promote(int(sticker_id), remark)
         if not ok:
@@ -760,10 +660,6 @@ class Stickers:
         if row:
             self._move_out_of_cache(int(sticker_id), str(row.get("file") or ""))
         self.log.info("收下了表情 #%s%s", sticker_id, f"（{remark}）" if remark else "")
-        try:
-            asyncio.get_running_loop().create_task(self.remember(int(sticker_id)))
-        except RuntimeError:
-            pass  # 没有事件循环（比如离线脚本里）就算了
         return True
 
     def _move_out_of_cache(self, sticker_id: int, file: str) -> None:
@@ -810,10 +706,6 @@ class Stickers:
                 return f"缓存区里没找到「{label[:20]}」，没收"
             row = cands[0]
         self.promote(int(row["id"]), text[:40])
-        try:
-            asyncio.get_running_loop().create_task(self.remember(int(row["id"])))
-        except RuntimeError:
-            pass
         label = str(row.get("remark") or row.get("meaning") or row.get("summary") or "表情")
         return f"收下了：{label[:40]}"
 
